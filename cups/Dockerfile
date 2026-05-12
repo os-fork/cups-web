@@ -54,6 +54,7 @@ RUN apt-get update && \
       # ── 通用工具 ──
       wget \
       curl \
+      unzip \
       gnupg2 \
       ca-certificates \
       lsb-release \
@@ -165,6 +166,16 @@ RUN /tmp/build-scripts/install-konica-bizhub.sh
 # 设备并上传固件。全架构通用（固件是二进制 blob，与 CPU 架构无关）。
 # 详见 scripts/install-hp-laserjet1020.sh
 RUN /tmp/build-scripts/install-hp-laserjet1020.sh
+
+# ────────────────────────────────────────────────────────────────────
+# Sharp PostScript PPD（MX-C2622R 等 Griffin2Light 系列）：全架构通用。
+# ────────────────────────────────────────────────────────────────────
+# issue #39。Sharp MX-C2622R 是 PostScript 打印机，只需 PPD 描述文件，
+# CUPS 内置 PS 过滤链即可驱动，无需架构相关的 filter 二进制。
+# PPD 来自 Sharp 官方 Linux 驱动包（Griffin2Light_Libre），已上传到本仓库
+# GitHub Releases 镜像（cups-driver tag）。
+# 详见 scripts/install-sharp.sh
+RUN /tmp/build-scripts/install-sharp.sh
 
 # 构建脚本使命完成，清理临时目录
 RUN rm -rf /tmp/build-scripts
