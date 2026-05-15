@@ -143,6 +143,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { apiFetch, readError } from '../utils/api'
 import { isOfficeFile, isOFDFile } from '../utils/file'
+import { downscaleImageIfNeeded } from '../utils/image'
 import FileUpload from '../components/print/FileUpload.vue'
 import PrintPreview from '../components/print/PrintPreview.vue'
 import PrintOptions from '../components/print/PrintOptions.vue'
@@ -510,13 +511,21 @@ function removeImage(idx) {
 // 通过后端 /api/convert 将一或多张图片合成为单个 PDF。
 // - 单图时传 `file` 字段；多图时传多个 `files` 字段，由后端 convertImagesMultiToPDF 合并。
 // - HEIC 已由 processFile / processMultipleImages 提前转换为 JPEG，这里无需特殊处理。
+// - 上传前用 downscaleImageIfNeeded 在浏览器端预压缩：长边 >3000px 的大图缩成 JPEG，
+//   避免多张原图合并时撞到反向代理的 client_max_body_size 触发 413（Issue #42）。
+//   阈值与后端 imageDownscaleMaxEdge 对齐，服务端拿到时已是合理尺寸，无需再 downscale。
+//   sequential 而非 Promise.all 是为了避免移动端同时持有多张大 canvas 导致 OOM。
 async function convertImagesToPdfViaServer(files, orient, pSize, name) {
   const list = Array.isArray(files) ? files : [files]
+  const downscaled = []
+  for (const f of list) {
+    downscaled.push(await downscaleImageIfNeeded(f))
+  }
   const fd = new FormData()
-  if (list.length === 1) {
-    fd.append('file', list[0], list[0].name)
+  if (downscaled.length === 1) {
+    fd.append('file', downscaled[0], downscaled[0].name)
   } else {
-    for (const f of list) fd.append('files', f, f.name)
+    for (const f of downscaled) fd.append('files', f, f.name)
     if (name) fd.append('name', name)
   }
   if (orient) fd.append('orientation', orient)
