@@ -6,13 +6,13 @@
 # 等国行早期喷墨机型。对应功能大部分可以被 Debian 自带的 `printer-driver-escpr`
 # 覆盖，但原厂 PPD 在墨水检测、尺寸预设等细节上更完整。
 #
-# ⚠️ 与 ESCPR2 同样的坑：download-center.epson.com.cn 的 UUID 会定期轮换，
-# URL 失效时 wget 退出码 8（HTTP 4xx）会让整个 docker build abort。
+# ⚠️ 原下载源 download-center.epson.com.cn 的 UUID 会定期轮换导致 URL 失效，
+# 因此把 .deb 镜像到本仓库的 GitHub Releases（cups-driver tag）。
 # 此处采用 **fail-fast**：下载 / dpkg 任一步失败则脚本立刻中断，
 # 避免发布镜像里缺少国行驱动却静默成功。arm64/armhf 在脚本入口直接退出，
 # 不受影响。
-# 升级方法：去 https://download-center.epson.com.cn 找对应机型按 F12 抓新
-# UUID，更新下方两个 UUID/DEB 变量即可。
+# 升级方法：把新版 .deb 上传到 https://github.com/hanxi/cups-web/releases 的
+# cups-driver tag，更新下方 DEB 变量即可。
 
 set -eo pipefail
 
@@ -26,14 +26,12 @@ fi
 # ────────────────────────────────────────────────────────────────────
 # 配置
 # ────────────────────────────────────────────────────────────────────
-EPSON_PROP_DRIVER_UUID="81976474-cb4d-4b75-a0d8-ebc9ebde70d0"
 EPSON_PROP_DRIVER_DEB="epson-inkjet-printer-201601w_1.0.1-1_amd64.deb"
-EPSON_PROP_UTILITY_UUID="b04dc5b0-cb78-4ce7-98c8-06731fb74062"
 EPSON_PROP_UTILITY_DEB="epson-printer-utility_1.2.2-1_amd64.deb"
 EPSON_PROP_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-EPSON_DRV_URL="https://download-center.epson.com.cn/f/module/${EPSON_PROP_DRIVER_UUID}/${EPSON_PROP_DRIVER_DEB}"
-EPSON_UTIL_URL="https://download-center.epson.com.cn/f/module/${EPSON_PROP_UTILITY_UUID}/${EPSON_PROP_UTILITY_DEB}"
+EPSON_DRV_URL="https://github.com/hanxi/cups-web/releases/download/cups-driver/${EPSON_PROP_DRIVER_DEB}"
+EPSON_UTIL_URL="https://github.com/hanxi/cups-web/releases/download/cups-driver/${EPSON_PROP_UTILITY_DEB}"
 
 # ────────────────────────────────────────────────────────────────────
 # 下载 & dpkg
