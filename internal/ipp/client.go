@@ -117,8 +117,9 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	// Used together with page-ranges (range is applied first, then odd/even is
 	// filtered). Typical use case: manual duplex – print odd pages, flip the
 	// paper stack, then print even pages. Default "all" is a no-op and therefore
-	// not sent on the wire.
-	if set := normalizePageSet(opts.PageSet); set != "" && set != "all" {
+	// not sent on the wire. "even-reverse" is pre-processed by the caller (PDF
+	// page reordering) so it must NOT be sent as an IPP attribute.
+	if set := normalizePageSet(opts.PageSet); set != "" && set != "all" && set != "even-reverse" {
 		req.Job.Add(goipp.MakeAttribute("page-set", goipp.TagKeyword, goipp.String(set)))
 	}
 
@@ -225,9 +226,11 @@ func paperTypeToIPP(t string) string {
 	return m[t]
 }
 
-// normalizePageSet maps arbitrary user input to one of the CUPS-recognized
-// page-set values ("all" | "odd" | "even"). Returns an empty string for
-// unknown values so the caller can omit the IPP attribute entirely.
+// normalizePageSet maps arbitrary user input to one of the recognized
+// page-set values ("all" | "odd" | "even" | "even-reverse"). Returns an
+// empty string for unknown values so the caller can omit the IPP attribute.
+// "even-reverse" is handled by the caller (PDF page reordering) and must NOT
+// be sent to CUPS as an IPP attribute.
 func normalizePageSet(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "all":
@@ -236,6 +239,8 @@ func normalizePageSet(s string) string {
 		return "odd"
 	case "even":
 		return "even"
+	case "even-reverse":
+		return "even-reverse"
 	default:
 		return ""
 	}

@@ -198,6 +198,24 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		defer printCleanup()
 	}
 
+	// Handle even-reverse: reorder PDF pages for manual duplex (even pages
+	// in reverse order, with a blank page prepended when total is odd).
+	if pageSet == "even-reverse" && printMime == "application/pdf" && pages > 1 {
+		reorderedPath, reorderCleanup, err := reorderPDFForManualDuplex(printPath, pages, paperSize)
+		if err != nil {
+			log.Printf("[print] even-reverse reorder failed: %v, falling back to normal even", err)
+			pageSet = "even"
+		} else {
+			defer reorderCleanup()
+			printPath = reorderedPath
+			reorderedPages, _ := countPDFPages(reorderedPath)
+			if reorderedPages > 0 {
+				pages = reorderedPages
+			}
+			pageSet = ""
+		}
+	}
+
 	sess, _ := auth.GetSession(r)
 	var recordID int64
 

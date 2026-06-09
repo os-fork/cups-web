@@ -205,7 +205,8 @@ const scalingItems = [
 const pageSetItems = [
   { label: '全部页', value: 'all', icon: 'i-lucide-copy' },
   { label: '仅奇数页', value: 'odd', icon: 'i-lucide-list-ordered' },
-  { label: '仅偶数页', value: 'even', icon: 'i-lucide-list-ordered' }
+  { label: '仅偶数页', value: 'even', icon: 'i-lucide-list-ordered' },
+  { label: '偶数页(倒序)', value: 'even-reverse', icon: 'i-lucide-arrow-down-up' }
 ]
 
 function onPageRangeInput(val) {
