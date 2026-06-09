@@ -120,7 +120,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 const props = defineProps({
   isColor: { type: Boolean, default: true },
@@ -141,7 +141,8 @@ const emit = defineEmits([
   'update:pageSet', 'update:mirror'
 ])
 
-const showAdvanced = ref(false)
+const showAdvanced = ref(localStorage.getItem('print_options_expanded') === '1')
+watch(showAdvanced, (val) => { localStorage.setItem('print_options_expanded', val ? '1' : '0') })
 const pageRangeError = ref('')
 
 const advancedSummary = computed(() => {

@@ -10,7 +10,7 @@ type estimateResp struct {
 }
 
 func estimateHandler(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}

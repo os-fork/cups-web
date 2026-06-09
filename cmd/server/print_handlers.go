@@ -26,7 +26,7 @@ type printResp struct {
 
 func printHandler(w http.ResponseWriter, r *http.Request) {
 	// Expect multipart form
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}

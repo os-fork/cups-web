@@ -18,6 +18,17 @@ export function formatPrinterName(uri) {
   return parts[parts.length - 1] || uri
 }
 
+export function formatDurationSeconds(totalSeconds) {
+  if (!totalSeconds || totalSeconds < 0) return '未知'
+  const d = Math.floor(totalSeconds / 86400)
+  const h = Math.floor((totalSeconds % 86400) / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  if (d > 0) return `${d}天${h}小时`
+  if (h > 0) return `${h}小时${m}分钟`
+  if (m > 0) return `${m}分钟`
+  return `${totalSeconds}秒`
+}
+
 // formatStateDuration 计算从 ISO 时间字符串到现在经过了多久
 export function formatStateDuration(isoStr) {
   if (!isoStr) return '未知'

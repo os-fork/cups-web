@@ -83,11 +83,12 @@
           <label class="block text-sm font-medium mb-1">自动清理天数</label>
           <UInput type="number" step="1" v-model="settings.retentionDays" placeholder="例如 30" />
         </div>
-        <div class="flex items-end">
+        <div class="flex items-end gap-2">
           <UButton color="primary" @click="saveSettings" icon="i-lucide-save" :loading="savingSettings" :disabled="savingSettings">保存设置</UButton>
+          <UButton variant="outline" @click="triggerCleanup" icon="i-lucide-trash-2" :loading="cleaningUp" :disabled="cleaningUp">立即清理</UButton>
         </div>
       </div>
-      <div class="text-sm text-muted mt-2">自动清理会删除打印记录与文件，并压缩数据库。</div>
+      <div class="text-sm text-muted mt-2">自动清理会删除打印记录与文件，并压缩数据库。点击"立即清理"可手动触发。</div>
     </UCard>
 
     <UModal v-model:open="showDeleteModal">
@@ -130,6 +131,7 @@ const settings = ref({ retentionDays: '' })
 
 const savingUser = ref(false)
 const savingSettings = ref(false)
+const cleaningUp = ref(false)
 const deletingUserId = ref(null)
 const pendingDeleteUser = ref(null)
 const showDeleteModal = ref(false)
@@ -304,6 +306,27 @@ async function loadSettings() {
   }
   const data = await resp.json()
   settings.value.retentionDays = String(data.retentionDays || 0)
+}
+
+async function triggerCleanup() {
+  cleaningUp.value = true
+  try {
+    const resp = await fetch('/api/admin/cleanup', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-CSRF-Token': getCSRF() }
+    })
+    if (!resp.ok) {
+      const msg = await readError(resp)
+      toast.add({ title: '清理失败', description: msg, color: 'error', icon: 'i-lucide-x-circle' })
+      if (resp.status === 401) emit('logout')
+      return
+    }
+    toast.add({ title: '清理完成', description: '已清理过期打印记录与文件', color: 'success', icon: 'i-lucide-check-circle' })
+    await loadPrintRecords()
+  } finally {
+    cleaningUp.value = false
+  }
 }
 
 async function saveSettings() {

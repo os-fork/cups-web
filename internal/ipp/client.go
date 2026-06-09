@@ -266,20 +266,21 @@ func parsePageRange(s string) [][2]int {
 
 // PrinterInfo holds information about a printer retrieved via IPP Get-Printer-Attributes.
 type PrinterInfo struct {
-	Name            string            `json:"name"`
-	URI             string            `json:"uri"`
-	State           string            `json:"state"`
-	StateMessage    string            `json:"stateMessage"`
-	StateReasons    []string          `json:"stateReasons"`
-	QueuedJobs      int               `json:"queuedJobs"`
-	FirmwareVersion string            `json:"firmwareVersion"`
-	UptimeSeconds   int               `json:"uptimeSeconds"`
-	MarkerNames     []string          `json:"markerNames"`
-	MarkerTypes     []string          `json:"markerTypes"`
-	MarkerLevels    []int             `json:"markerLevels"`
-	MarkerColors    []string          `json:"markerColors"`
-	MediaReady      []string          `json:"mediaReady"`
-	Attributes      map[string]string `json:"attributes"`
+	Name                 string            `json:"name"`
+	URI                  string            `json:"uri"`
+	State                string            `json:"state"`
+	StateMessage         string            `json:"stateMessage"`
+	StateReasons         []string          `json:"stateReasons"`
+	QueuedJobs           int               `json:"queuedJobs"`
+	FirmwareVersion      string            `json:"firmwareVersion"`
+	UptimeSeconds        int               `json:"uptimeSeconds"`
+	StateDurationSeconds int               `json:"stateDurationSeconds"`
+	MarkerNames          []string          `json:"markerNames"`
+	MarkerTypes          []string          `json:"markerTypes"`
+	MarkerLevels         []int             `json:"markerLevels"`
+	MarkerColors         []string          `json:"markerColors"`
+	MediaReady           []string          `json:"mediaReady"`
+	Attributes           map[string]string `json:"attributes"`
 }
 
 // httpToIppURI converts an http:// URI to ipp:// for use in IPP request attributes.
@@ -351,6 +352,7 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 		Attributes: make(map[string]string),
 	}
 
+	var stateChangeTime int
 	for _, a := range rsp.Printer {
 		if len(a.Values) == 0 {
 			continue
@@ -384,6 +386,8 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 			info.FirmwareVersion = a.Values[0].V.String()
 		case "printer-up-time":
 			fmt.Sscanf(a.Values[0].V.String(), "%d", &info.UptimeSeconds)
+		case "printer-state-change-time":
+			fmt.Sscanf(a.Values[0].V.String(), "%d", &stateChangeTime)
 		case "marker-names":
 			for _, v := range a.Values {
 				info.MarkerNames = append(info.MarkerNames, v.V.String())
@@ -413,6 +417,11 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 			}
 			info.Attributes[a.Name] = strings.Join(vals, ", ")
 		}
+	}
+
+	// 计算状态持续时间：uptime - stateChangeTime
+	if info.UptimeSeconds > 0 && stateChangeTime > 0 && info.UptimeSeconds >= stateChangeTime {
+		info.StateDurationSeconds = info.UptimeSeconds - stateChangeTime
 	}
 
 	log.Printf("[ipp] GetPrinterAttributes done: name=%q state=%q jobs=%d markers=%d",

@@ -60,12 +60,12 @@
         </div>
 
         <!-- 状态持续时间 -->
-        <div v-if="printerInfo.attributes && printerInfo.attributes['printer-state-change-date-time']" class="flex items-center justify-between p-2 bg-elevated rounded-lg">
+        <div v-if="printerInfo.stateDurationSeconds > 0 || (printerInfo.attributes && printerInfo.attributes['printer-state-change-date-time'])" class="flex items-center justify-between p-2 bg-elevated rounded-lg">
           <div class="flex items-center gap-2">
             <UIcon name="i-lucide-clock" class="w-4 h-4 text-success" />
             <span class="text-sm font-medium">状态持续</span>
           </div>
-          <span class="text-sm">{{ formatStateDuration(printerInfo.attributes['printer-state-change-date-time']) }}</span>
+          <span class="text-sm">{{ printerInfo.stateDurationSeconds > 0 ? formatDurationSeconds(printerInfo.stateDurationSeconds) : formatStateDuration(printerInfo.attributes['printer-state-change-date-time']) }}</span>
         </div>
 
         <!-- 固件版本 -->
@@ -143,7 +143,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
-import { formatStateDuration, printerStateColor, printerStateText, markerLevelColor, markerBarColor } from '../../utils/format'
+import { formatDurationSeconds, formatStateDuration, printerStateColor, printerStateText, markerLevelColor, markerBarColor } from '../../utils/format'
 
 const props = defineProps({
   printerInfo: { type: Object, default: null },

@@ -270,6 +270,15 @@ func adminUpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+
+func adminCleanupHandler(w http.ResponseWriter, r *http.Request) {
+	if err := cleanupOldPrints(r.Context(), appStore, uploadDir, time.Now()); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "cleanup failed: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
 func normalizeRole(role string) string {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "":

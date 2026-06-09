@@ -62,6 +62,7 @@
           :gs-applied="gsApplied"
           @file-selected="processFile"
           @files-selected="processMultipleImages"
+          @files-batch-selected="processBatchFiles"
           @clear="clearFile"
           @convert="convertToPdf"
           @apply-gs="applyGsNormalization"
@@ -89,11 +90,11 @@
           :ui="{ base: 'justify-center', label: 'flex-1 text-center' }"
           class="w-full font-semibold tracking-wide shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/35 transition-all ring-1 ring-primary/30"
           icon="i-lucide-send"
-          :disabled="!canPrint || printing"
-          :loading="printing"
+          :disabled="!canPrint || printing || batchPrinting"
+          :loading="printing || batchPrinting"
           @click="uploadAndPrint"
         >
-          开始打印
+          {{ batchFiles.length > 0 ? `批量打印 (${batchFiles.length} 个文件)` : '开始打印' }}
         </UButton>
 
         <!-- 5. 多图片列表 -->
@@ -176,6 +177,11 @@ const fileDisplayName = ref('')
 const gsApplying = ref(false)
 const gsApplied = ref(false)
 
+// ─── 批量打印 ────────────────────────────────────────────
+const batchFiles = ref([])
+const batchPrinting = ref(false)
+const batchProgress = ref({ current: 0, total: 0 })
+
 // ─── 打印参数 ─────────────────────────────────────────────
 const isColor = ref(true)
 const duplex = ref('one-sided')
@@ -240,7 +246,7 @@ const paperSizeItems = [
 // ─── 计算属性 ─────────────────────────────────────────────
 const isMultiImage = computed(() => selectedImages.value.length > 1)
 const multiImageTotalSize = computed(() => selectedImages.value.reduce((sum, f) => sum + f.size, 0))
-const canPrint = computed(() => !!printer.value && (!!pdfBlob.value || !!selectedFile.value || isMultiImage.value))
+const canPrint = computed(() => !!printer.value && (!!pdfBlob.value || !!selectedFile.value || isMultiImage.value || batchFiles.value.length > 0))
 
 // 打印机下拉选项（原 PrinterSelector.vue 迁移过来）
 const printerItems = computed(() =>
@@ -312,6 +318,7 @@ function clearFile() {
   fileDisplayName.value = ''
   gsApplying.value = false
   gsApplied.value = false
+  batchFiles.value = []
 }
 
 function processFile(f) {
@@ -428,13 +435,13 @@ function processMultipleImages(files) {
   }
 
   if (hasHeic) {
-    const batchFiles = arr
+    const heicBatch = arr
     arr.forEach((f, idx) => {
       if (!isHeicImage(f)) return
       heicBlobToJpegBlob(f)
         .then(jpegFile => {
           // 若用户在转码期间已切换/清空文件，则丢弃结果
-          if (selectedImages.value !== batchFiles) return
+          if (selectedImages.value !== heicBatch) return
           selectedImages.value[idx] = jpegFile
           imageThumbnails.value[idx] = URL.createObjectURL(jpegFile)
           // 若之前没有可用预览，此时用第一张已就绪的
@@ -448,7 +455,7 @@ function processMultipleImages(files) {
           }
         })
         .catch(err => {
-          if (selectedImages.value !== batchFiles) return
+          if (selectedImages.value !== heicBatch) return
           toast.add({
             title: `HEIC 解码失败：${f.name}`,
             description: err.message,
@@ -481,6 +488,80 @@ function removeImage(idx) {
     converted.value = false
     pdfBlob.value = null
   }
+}
+
+function processBatchFiles(files) {
+  clearFile()
+  batchFiles.value = Array.from(files)
+  fileDisplayName.value = `${batchFiles.value.length} 个文件（批量打印）`
+  previewType.value = 'text'
+  textPreview.value = `已选择 ${batchFiles.value.length} 个文件，点击"开始打印"将逐个打印。`
+}
+
+async function uploadAndPrintBatch() {
+  if (!printer.value) { toast.add({ title: '请选择打印机', color: 'warning' }); return }
+  if (batchFiles.value.length === 0) return
+
+  batchPrinting.value = true
+  batchProgress.value = { current: 0, total: batchFiles.value.length }
+  let successCount = 0
+  let failCount = 0
+
+  for (let i = 0; i < batchFiles.value.length; i++) {
+    batchProgress.value.current = i + 1
+    const file = batchFiles.value[i]
+
+    try {
+      let fileToSend = file
+      // 非 PDF 文件需要先转换
+      if (file.type !== 'application/pdf') {
+        const fd = new FormData()
+        fd.append('file', file, file.name)
+        fd.append('orientation', orientation.value)
+        fd.append('paper_size', paperSize.value)
+        const convertResp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
+        if (!convertResp.ok) {
+          throw new Error(await readError(convertResp))
+        }
+        const blob = await convertResp.blob()
+        fileToSend = new File([blob], file.name.replace(/\.[^/.]+$/, '') + '.pdf', { type: 'application/pdf' })
+      }
+
+      const form = new FormData()
+      form.append('file', fileToSend, fileToSend.name)
+      form.append('printer', printer.value)
+      form.append('duplex', duplex.value === 'one-sided' ? 'false' : 'true')
+      form.append('color', isColor.value ? 'true' : 'false')
+      form.append('copies', String(copies.value))
+      form.append('orientation', orientation.value)
+      form.append('paper_size', paperSize.value)
+      form.append('paper_type', paperType.value)
+      form.append('print_scaling', printScaling.value)
+      if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
+      if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
+      if (mirror.value) form.append('mirror', 'true')
+
+      const resp = await apiFetch('/api/print', { method: 'POST', body: form }, () => emit('logout'))
+      if (!resp.ok) throw new Error(await readError(resp))
+      successCount++
+    } catch (e) {
+      failCount++
+      toast.add({ title: `打印失败：${file.name}`, description: e.message, color: 'error', icon: 'i-lucide-x-circle' })
+    }
+  }
+
+  if (successCount > 0) {
+    toast.add({
+      title: '批量打印完成',
+      description: `成功 ${successCount} 个${failCount > 0 ? `，失败 ${failCount} 个` : ''}`,
+      color: failCount > 0 ? 'warning' : 'success',
+      icon: failCount > 0 ? 'i-lucide-alert-triangle' : 'i-lucide-check-circle'
+    })
+    localStorage.setItem('last_printer', printer.value)
+    await loadPrintRecords()
+  }
+  batchPrinting.value = false
+  batchProgress.value = { current: 0, total: 0 }
 }
 
 // 通过后端 /api/convert 将一或多张图片合成为单个 PDF。
@@ -595,6 +676,12 @@ async function applyGsNormalization() {
 // ─── 打印 ─────────────────────────────────────────────────
 async function uploadAndPrint() {
   if (!printer.value) { toast.add({ title: '请选择打印机', color: 'warning' }); return }
+
+  // 批量打印模式
+  if (batchFiles.value.length > 0) {
+    await uploadAndPrintBatch()
+    return
+  }
 
   const fileToSend = pdfBlob.value || selectedFile.value
   if (!fileToSend && !isMultiImage.value) { toast.add({ title: '请先选择文件', color: 'warning' }); return }

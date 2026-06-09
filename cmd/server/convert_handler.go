@@ -9,7 +9,7 @@ import (
 
 func convertHandler(w http.ResponseWriter, r *http.Request) {
 	// Expect multipart form
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
 		http.Error(w, "invalid multipart form", http.StatusBadRequest)
 		return
 	}

@@ -118,7 +118,7 @@ const props = defineProps({
   gsApplied: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['file-selected', 'files-selected', 'clear', 'convert', 'apply-gs', 'print', 'download'])
+const emit = defineEmits(['file-selected', 'files-selected', 'files-batch-selected', 'clear', 'convert', 'apply-gs', 'print', 'download'])
 
 const isPdf = computed(() => props.selectedFile?.type === 'application/pdf')
 
@@ -131,15 +131,18 @@ function handleFiles(files) {
     emit('file-selected', files[0])
     return
   }
-  // 多文件：过滤出图片
-  const images = Array.from(files).filter(f => f.type.startsWith('image/'))
-  if (images.length === 0) {
-    // 无图片，取第一个文件走单文件流程
-    emit('file-selected', files[0])
-  } else if (images.length === 1) {
-    emit('file-selected', images[0])
+  const arr = Array.from(files)
+  const images = arr.filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name))
+  if (images.length === arr.length) {
+    // 全部是图片：走多图合并流程
+    if (images.length === 1) {
+      emit('file-selected', images[0])
+    } else {
+      emit('files-selected', images)
+    }
   } else {
-    emit('files-selected', images)
+    // 混合文件类型：走批量打印流程
+    emit('files-batch-selected', arr)
   }
 }
 
