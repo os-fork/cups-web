@@ -310,6 +310,8 @@ make clean          # 删除 bin/cups-web
 
 > **前后端整合规则**：Go 使用 `//go:embed dist/**` 将前端产物嵌入二进制，因此 **必须先构建前端** 再构建后端（CI 与 `Makefile all` 已按此顺序执行）。
 
+> **构建规范**：编译后端**必须**使用 `make build`（或等效的 `go build -ldflags='...' -o bin/cups-web ./cmd/server`），**禁止**裸执行 `go build ./cmd/server` —— 后者会在项目根目录生成名为 `server` 的垃圾文件（Go 默认用包目录名作为输出文件名），而非正确的 `bin/cups-web`。如果只需做语法/类型检查而不生成二进制，使用 `go vet ./cmd/server`。
+
 ### Vite 开发代理
 
 `frontend/vite.config.js` 里配置了 `/api → http://localhost:8090` 代理，本地调试建议：

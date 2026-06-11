@@ -29,7 +29,7 @@
     <!-- 外层 bg-elevated 提供浅灰底 + padding，使白纸比容器略小一圈更耐看；
          内层白纸宽度 = 容器内容区宽度，高度由 aspect-ratio 按纸张真实比例自动决定。 -->
     <div
-      v-if="selectedFile || isMultiImage"
+      v-if="selectedFile || isMultiImage || previewUrl"
       class="bg-elevated rounded-lg p-3 sm:p-4"
     >
       <div

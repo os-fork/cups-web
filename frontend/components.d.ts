@@ -23,6 +23,8 @@ declare module 'vue' {
     UForm: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Form.vue')['default']
     UFormField: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/FormField.vue')['default']
     UIcon: typeof import('./node_modules/@nuxt/ui/dist/runtime/vue/components/Icon.vue')['default']
+    UIdCardUpload: typeof import('./src/components/print/IdCardUpload.vue')['default']
+    UImageCropModal: typeof import('./src/components/print/ImageCropModal.vue')['default']
     UInput: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Input.vue')['default']
     UModal: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
     UPaperPreview: typeof import('./src/components/print/PaperPreview.vue')['default']
