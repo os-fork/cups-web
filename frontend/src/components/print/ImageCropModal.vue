@@ -9,9 +9,15 @@
         <div class="relative bg-elevated rounded-lg overflow-hidden" style="max-height: 60vh;">
           <img ref="imgRef" :src="imageUrl" class="max-w-full block" />
         </div>
-        <div class="flex justify-end gap-2">
-          <UButton variant="ghost" @click="cancel">取消</UButton>
-          <UButton color="primary" icon="i-lucide-check" @click="confirm">确认裁剪</UButton>
+        <div class="flex items-center justify-between">
+          <div class="flex gap-1">
+            <UButton variant="outline" size="sm" icon="i-lucide-rotate-ccw" @click="rotateLeft">左旋</UButton>
+            <UButton variant="outline" size="sm" icon="i-lucide-rotate-cw" @click="rotateRight">右旋</UButton>
+          </div>
+          <div class="flex gap-2">
+            <UButton variant="ghost" @click="cancel">取消</UButton>
+            <UButton color="primary" icon="i-lucide-check" @click="confirm">确认裁剪</UButton>
+          </div>
         </div>
       </div>
     </template>
@@ -158,6 +164,9 @@ function confirm() {
     isOpen.value = false
   }, 'image/jpeg', 0.92)
 }
+
+function rotateLeft() { if (cropper) cropper.rotate(-90) }
+function rotateRight() { if (cropper) cropper.rotate(90) }
 
 function cancel() { isOpen.value = false }
 

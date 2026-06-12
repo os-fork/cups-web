@@ -39,7 +39,11 @@ func composeHandler(w http.ResponseWriter, r *http.Request) {
 	case "invoice":
 		outPath, cleanup, err = composeInvoice2Up(ctx, headers)
 	case "id_card":
-		outPath, cleanup, err = composeIdCard(ctx, headers)
+		paper := r.FormValue("paper")
+		if paper == "" {
+			paper = "A4"
+		}
+		outPath, cleanup, err = composeIdCard(ctx, headers, paper)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unsupported mode: "+mode)
 		return

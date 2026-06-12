@@ -100,7 +100,7 @@ const (
 	idCardGapMM    = 30.0
 )
 
-func composeIdCard(ctx context.Context, fileHeaders []*multipart.FileHeader) (string, func(), error) {
+func composeIdCard(ctx context.Context, fileHeaders []*multipart.FileHeader, paper string) (string, func(), error) {
 	if len(fileHeaders) != 2 {
 		return "", nil, errors.New("id card mode requires exactly 2 files (front and back)")
 	}
@@ -131,6 +131,43 @@ func composeIdCard(ctx context.Context, fileHeaders []*multipart.FileHeader) (st
 		}
 	}
 
+	var pageW, pageH float64
+	if paper == "A5" {
+		pageW, pageH = 148.0, 210.0
+		pdf := gofpdf.NewCustom(&gofpdf.InitType{
+			OrientationStr: "P",
+			UnitStr:        "mm",
+			Size:           gofpdf.SizeType{Wd: pageW, Ht: pageH},
+		})
+		pdf.SetMargins(0, 0, 0)
+		pdf.SetAutoPageBreak(false, 0)
+		pdf.AddPage()
+
+		imp := gofpdi.NewImporter()
+
+		halfH := pageH / 2
+		cardX := (pageW - idCardWidthMM) / 2
+		card1Y := (halfH - idCardHeightMM) / 2
+		card2Y := halfH + (halfH-idCardHeightMM)/2
+
+		if err := placePageInSlot(pdf, imp, &pages[0], cardX, card1Y, idCardWidthMM, idCardHeightMM); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("front: %w", err)
+		}
+		if err := placePageInSlot(pdf, imp, &pages[1], cardX, card2Y, idCardWidthMM, idCardHeightMM); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("back: %w", err)
+		}
+
+		outPath := filepath.Join(tmpDir, "idcard_composed.pdf")
+		if err := pdf.OutputFileAndClose(outPath); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		return outPath, cleanup, nil
+	}
+
+	pageW, pageH = 210.0, 297.0
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetMargins(0, 0, 0)
 	pdf.SetAutoPageBreak(false, 0)
@@ -138,7 +175,6 @@ func composeIdCard(ctx context.Context, fileHeaders []*multipart.FileHeader) (st
 
 	imp := gofpdi.NewImporter()
 
-	pageW, pageH := 210.0, 297.0
 	halfH := pageH / 2
 	cardX := (pageW - idCardWidthMM) / 2
 	card1Y := (halfH - idCardHeightMM) / 2

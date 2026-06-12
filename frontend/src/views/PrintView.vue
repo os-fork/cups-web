@@ -133,6 +133,20 @@
           @update:front="onIdCardFront"
           @update:back="onIdCardBack"
         />
+        <div v-if="printMode === 'id_card'" class="flex items-center gap-3">
+          <span class="text-sm text-muted shrink-0">版面</span>
+          <div class="flex rounded-lg border border-muted overflow-hidden">
+            <label
+              v-for="p in ['A4', 'A5']"
+              :key="p"
+              class="px-3 py-1 cursor-pointer text-sm transition"
+              :class="idCardPaper === p ? 'bg-primary text-white font-medium' : 'hover:bg-elevated'"
+            >
+              <input type="radio" :value="p" :checked="idCardPaper === p" class="sr-only" @change="setIdCardPaper(p)" />
+              {{ p }}
+            </label>
+          </div>
+        </div>
         <UButton
           v-if="printMode === 'id_card' && idCardFront && idCardBack"
           variant="outline"
@@ -284,6 +298,7 @@ const idCardFront = ref(null)
 const idCardBack = ref(null)
 const idCardFrontPreview = ref('')
 const idCardBackPreview = ref('')
+const idCardPaper = ref('A4')
 const composing = ref(false)
 
 // ─── 状态 ─────────────────────────────────────────────────
@@ -908,10 +923,16 @@ function switchMode(mode) {
   } else if (mode === 'id_card') {
     isColor.value = true
     printScaling.value = 'none'
+    paperSize.value = 'A4'
   } else {
     isColor.value = true
     printScaling.value = 'fit'
   }
+}
+
+function setIdCardPaper(p) {
+  idCardPaper.value = p
+  paperSize.value = p
 }
 
 function clearModeState() {
@@ -922,6 +943,7 @@ function clearModeState() {
   idCardBack.value = null
   idCardFrontPreview.value = ''
   idCardBackPreview.value = ''
+  idCardPaper.value = 'A4'
   composing.value = false
 }
 
@@ -984,6 +1006,7 @@ async function composeAndPreview() {
       }
     } else if (printMode.value === 'id_card') {
       fd.append('mode', 'id_card')
+      fd.append('paper', idCardPaper.value)
       fd.append('files', idCardFront.value, idCardFront.value.name)
       fd.append('files', idCardBack.value, idCardBack.value.name)
     }
