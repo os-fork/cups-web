@@ -161,6 +161,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress openjdk-21-jre \
     ghostscript fonts-droid-fallback \
     fonts-dejavu-core fonts-noto-cjk fonts-arphic-uming fonts-arphic-ukai fonts-wqy-zenhei \
+    fonts-wqy-microhei \
+    fonts-liberation2 fonts-urw-base35 gsfonts fontconfig \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
