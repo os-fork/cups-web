@@ -15,7 +15,7 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 
 LABEL maintainer="涵曦 <im.hanxi@gmail.com>"
-LABEL description="Debian-based CUPS server (compiled from OpenPrinting/cups source) with Epson L380 official driver + Brother driverless/laser support preinstalled"
+LABEL description="Debian-based CUPS server (compiled from OpenPrinting/cups source) with wide printer driver coverage: Epson, HP, Canon, Brother, Samsung/Xerox, Konica Minolta, Sharp, and more"
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
@@ -69,6 +69,16 @@ RUN apt-get update && \
       printer-driver-cups-pdf \
       printer-driver-escpr \
       printer-driver-foo2zjs \
+      # ── 三星/施乐 SPL 激光机（CLP-300、SCX-4200、ML-2010 等） ──
+      # printer-driver-all 作为依赖已拉入，这里显式声明确保可见性和 armhf 兼容性。
+      printer-driver-splix \
+      # ── HP PostScript PPD + HP 喷墨驱动 ──
+      printer-driver-postscript-hp \
+      printer-driver-hpijs \
+      # ── Foomatic PPD 生成引擎（支持动态生成 Foomatic 数据库中打印机的 PPD） ──
+      foomatic-db-engine \
+      # ── CUPS 远程打印机发现（cups-filters 在新版 Debian 不再自动拉入此包） ──
+      cups-browsed \
       # ── Brother 兼容驱动 ──
       # Brother 官方未把任何 Linux 驱动上传 Debian 主仓库，用户常见的 Brother 打印机
       # （含新款 DCP-T425W、HL-Lxxxx 等）在 CUPS 里出现 "IPP Everywhere (color)" 选项
@@ -88,7 +98,23 @@ RUN apt-get update && \
       hpijs-ppds \
       hp-ppd \
       hplip \
-      avahi-daemon && \
+      avahi-daemon \
+      # ── 字体：CUPS filter 链（cups-filters → Ghostscript → 光栅化）处理 ──
+      # 未嵌入字体的 PDF 时需要系统字体；PostScript 打印机需要 URW base 35。
+      # CJK 中文字体
+      fonts-wqy-zenhei \
+      fonts-wqy-microhei \
+      fonts-noto-cjk \
+      fonts-arphic-uming \
+      fonts-arphic-ukai \
+      fonts-droid-fallback \
+      # 西文基础字体
+      fonts-dejavu-core \
+      fonts-liberation2 \
+      fonts-urw-base35 \
+      gsfonts \
+      fontconfig && \
+    fc-cache -f && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ────────────────────────────────────────────────────────────────────
@@ -117,6 +143,16 @@ RUN /tmp/build-scripts/install-escpr2.sh
 # LBP2900B 等走 CAPT 协议的旧款 Canon 激光打印机。纯 C 源码，全架构编译。
 # 详见 scripts/install-canon-capt.sh
 RUN /tmp/build-scripts/install-canon-capt.sh
+
+# ────────────────────────────────────────────────────────────────────
+# foo2zjs / foo2xqx 固件：HP host-based 激光打印机系列。
+# ────────────────────────────────────────────────────────────────────
+# 覆盖 HP LaserJet 1000/1005/1018（foo2zjs）和 P1005/P1006/P1505（foo2xqx）。
+# HP 1020 的固件由 install-hp-laserjet1020.sh 单独处理。
+# 构建期从公共镜像站下载固件源并用 arm2hpdl 编译转换（需要 gcc，
+# 因此必须在 cleanup-build.sh 之前执行）。全架构通用。
+# 详见 scripts/install-foo2zjs-firmware.sh
+RUN /tmp/build-scripts/install-foo2zjs-firmware.sh
 
 # ────────────────────────────────────────────────────────────────────
 # 清理编译工具链。
