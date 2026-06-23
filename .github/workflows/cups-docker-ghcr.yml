@@ -9,6 +9,17 @@ on:
       - 'cups/**'
       - '.github/workflows/cups-docker-ghcr.yml'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '覆盖 tag 名（留空则用分支名或 git tag）'
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: '构建平台（逗号分隔），留空默认全架构'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64,linux/arm/v7'
 
 permissions:
   packages: write
@@ -40,18 +51,19 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/cups
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            type=ref,event=branch,enable=${{ inputs.tag == '' }}
+            type=semver,pattern={{version}},enable=${{ inputs.tag == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.tag == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.tag == '' }}
+            type=raw,value=latest,enable=${{ inputs.tag == '' && github.ref_type == 'tag' }}
 
       - name: Build and push ghcr.io/hanxi/cups (multi-arch)
         uses: docker/build-push-action@v6
         with:
           context: ./cups
           file: ./cups/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
