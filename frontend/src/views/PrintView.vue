@@ -190,6 +190,7 @@
           v-model:pageRange="pageRange"
           v-model:pageSet="pageSet"
           v-model:mirror="mirror"
+          v-model:watermarkText="watermarkText"
           :printing="printing"
         />
 
@@ -222,9 +223,10 @@
             :orientation-label="orientationLabel"
             :paper-dim-text="paperDimText"
             :paper-preview-style="paperPreviewStyle"
+            :watermark-text="watermarkText"
           />
         </div>
-        <PrintRecordList :records="printRecords" :loading="loadingRecords" @refresh="loadPrintRecords" />
+        <PrintRecordList ref="recordListRef" :records="printRecords" :loading="loadingRecords" :printers="printers" :current-printer="printer" @refresh="loadPrintRecords" @reprint="handleReprint" />
         <PrinterStatus :printer-info="printerInfo" :printer-uri="printer" :loading="loadingPrinterInfo" :error="printerInfoError" @refresh="loadPrinterInfo" />
       </div>
     </div>
@@ -283,6 +285,7 @@ const printScaling = ref('fit')
 const pageRange = ref('')
 const pageSet = ref('all')
 const mirror = ref(false)
+const watermarkText = ref('')
 
 // ─── 打印模式 ─────────────────────────────────────────────
 const printMode = ref(localStorage.getItem('print_mode') || 'standard')
@@ -308,6 +311,7 @@ const refreshing = ref(false)
 // ─── 打印记录 ─────────────────────────────────────────────
 const printRecords = ref([])
 const loadingRecords = ref(false)
+const recordListRef = ref(null)
 
 // ─── 打印机状态 ───────────────────────────────────────────
 const printerInfo = ref(null)
@@ -661,6 +665,7 @@ async function uploadAndPrintBatch() {
       if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
       if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
       if (mirror.value) form.append('mirror', 'true')
+      if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
 
       const resp = await apiFetch('/api/print', { method: 'POST', body: form }, () => emit('logout'))
       if (!resp.ok) throw new Error(await readError(resp))
@@ -829,6 +834,7 @@ async function uploadAndPrint() {
   if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
   if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
   if (mirror.value) form.append('mirror', 'true')
+  if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
 
   printing.value = true
   try {
@@ -872,6 +878,39 @@ async function loadPrintRecords(silent = false) {
     console.error('加载打印记录失败', e)
   } finally {
     loadingRecords.value = false
+  }
+}
+
+async function handleReprint({ id, printer: reprintPrinter, duplex: reprintDuplex, color: reprintColor, copies: reprintCopies }) {
+  try {
+    const resp = await apiFetch(`/api/print-records/${id}/reprint`, {
+      method: 'POST',
+      body: JSON.stringify({
+        printer: reprintPrinter,
+        duplex: reprintDuplex,
+        color: reprintColor,
+        copies: reprintCopies,
+        orientation: orientation.value,
+        paperSize: paperSize.value,
+        paperType: paperType.value,
+        printScaling: printScaling.value
+      })
+    }, () => emit('logout'))
+    if (!resp.ok) {
+      throw new Error(await readError(resp))
+    }
+    const j = await resp.json()
+    toast.add({
+      title: '重新打印已提交',
+      description: `${j.pages} 页，任务ID：${j.jobId || '—'}`,
+      color: 'success',
+      icon: 'i-lucide-check-circle'
+    })
+    await loadPrintRecords()
+  } catch (e) {
+    toast.add({ title: '重新打印失败', description: e.message, color: 'error', icon: 'i-lucide-x-circle' })
+  } finally {
+    recordListRef.value?.clearReprintLoading()
   }
 }
 

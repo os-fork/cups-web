@@ -9,15 +9,26 @@
         <div class="relative bg-elevated rounded-lg overflow-hidden" style="max-height: 60vh;">
           <img ref="imgRef" :src="imageUrl" class="max-w-full block" />
         </div>
-        <div class="flex items-center justify-between">
-          <div class="flex gap-1">
+        <div class="flex items-center gap-2">
+          <div class="flex gap-1 shrink-0">
             <UButton variant="outline" size="sm" icon="i-lucide-rotate-ccw" @click="rotateLeft">左旋</UButton>
             <UButton variant="outline" size="sm" icon="i-lucide-rotate-cw" @click="rotateRight">右旋</UButton>
           </div>
-          <div class="flex gap-2">
-            <UButton variant="ghost" @click="cancel">取消</UButton>
-            <UButton color="primary" icon="i-lucide-check" @click="confirm">确认裁剪</UButton>
-          </div>
+          <input
+            type="range"
+            :min="-45"
+            :max="45"
+            step="0.5"
+            v-model.number="fineAngle"
+            class="flex-1 h-1.5 accent-[var(--ui-primary)]"
+            @input="onFineRotate"
+          />
+          <span class="text-xs text-muted tabular-nums w-12 text-right shrink-0">{{ fineAngle.toFixed(1) }}°</span>
+          <UButton v-if="fineAngle !== 0" variant="ghost" size="xs" icon="i-lucide-undo-2" @click="resetFine" />
+        </div>
+        <div class="flex justify-end gap-2">
+          <UButton variant="ghost" @click="cancel">取消</UButton>
+          <UButton color="primary" icon="i-lucide-check" @click="confirm">确认裁剪</UButton>
         </div>
       </div>
     </template>
@@ -39,12 +50,16 @@ const emit = defineEmits(['cropped', 'close'])
 
 const isOpen = ref(false)
 const imgRef = ref(null)
+const fineAngle = ref(0)
+const baseAngle = ref(0)
 let cropper = null
 
 watch(() => props.open, (val) => { isOpen.value = val })
 
 watch(isOpen, (val) => {
   if (val) {
+    fineAngle.value = 0
+    baseAngle.value = 0
     nextTick(() => initCropper())
   } else {
     destroyCropper()
@@ -165,8 +180,23 @@ function confirm() {
   }, 'image/jpeg', 0.92)
 }
 
-function rotateLeft() { if (cropper) cropper.rotate(-90) }
-function rotateRight() { if (cropper) cropper.rotate(90) }
+function rotateLeft() {
+  if (!cropper) return
+  baseAngle.value -= 90
+  cropper.rotateTo(baseAngle.value + fineAngle.value)
+}
+function rotateRight() {
+  if (!cropper) return
+  baseAngle.value += 90
+  cropper.rotateTo(baseAngle.value + fineAngle.value)
+}
+function onFineRotate() {
+  if (cropper) cropper.rotateTo(baseAngle.value + fineAngle.value)
+}
+function resetFine() {
+  fineAngle.value = 0
+  onFineRotate()
+}
 
 function cancel() { isOpen.value = false }
 

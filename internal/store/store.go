@@ -17,6 +17,7 @@ const (
 
 const (
 	SettingRetentionDays = "retention_days"
+	SettingSaveHistory   = "save_history"
 )
 
 type Store struct {
@@ -127,6 +128,11 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	if _, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`,
 		SettingRetentionDays, "0",
+	); err != nil {
+		return fmt.Errorf("seed settings: %w", err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`,
+		SettingSaveHistory, "1",
 	); err != nil {
 		return fmt.Errorf("seed settings: %w", err)
 	}

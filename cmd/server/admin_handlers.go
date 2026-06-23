@@ -45,6 +45,7 @@ type adminUserResponse struct {
 
 type settingsPayload struct {
 	RetentionDays *int64 `json:"retentionDays"`
+	SaveHistory   *bool  `json:"saveHistory"`
 }
 
 func adminListUsersHandler(w http.ResponseWriter, r *http.Request) {
@@ -231,19 +232,28 @@ func adminDeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 
 func adminGetSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	var retention int64
+	var saveHistory int64
 	err := appStore.WithTx(r.Context(), true, func(tx *sql.Tx) error {
 		val, err := store.GetSettingInt(r.Context(), tx, store.SettingRetentionDays, 0)
 		if err != nil {
 			return err
 		}
 		retention = val
+		sh, err := store.GetSettingInt(r.Context(), tx, store.SettingSaveHistory, 1)
+		if err != nil {
+			return err
+		}
+		saveHistory = sh
 		return nil
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to load settings")
 		return
 	}
-	writeJSON(w, map[string]int64{"retentionDays": retention})
+	writeJSON(w, map[string]interface{}{
+		"retentionDays": retention,
+		"saveHistory":   saveHistory != 0,
+	})
 }
 
 func adminUpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +271,15 @@ func adminUpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		if payload.SaveHistory != nil {
+			var v int64
+			if *payload.SaveHistory {
+				v = 1
+			}
+			if err := store.SetSettingInt(r.Context(), tx, store.SettingSaveHistory, v); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -272,11 +291,12 @@ func adminUpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 
 func adminCleanupHandler(w http.ResponseWriter, r *http.Request) {
-	if err := cleanupOldPrints(r.Context(), appStore, uploadDir, time.Now()); err != nil {
+	count, err := cleanupAllPrints(r.Context(), appStore, uploadDir)
+	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "cleanup failed: "+err.Error())
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	writeJSON(w, map[string]interface{}{"ok": true, "deleted": count})
 }
 
 func normalizeRole(role string) string {

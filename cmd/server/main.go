@@ -101,6 +101,7 @@ func main() {
 	protected.HandleFunc("/estimate", estimateHandler).Methods("POST")
 	protected.HandleFunc("/print-records", printRecordsHandler).Methods("GET")
 	protected.HandleFunc("/print-records/{id:[0-9]+}/file", printRecordFileHandler).Methods("GET")
+	protected.HandleFunc("/print-records/{id:[0-9]+}/reprint", reprintHandler).Methods("POST")
 	protected.HandleFunc("/printer-info", printerInfoHandler).Methods("GET")
 
 	admin := api.PathPrefix("/admin").Subrouter()

@@ -444,6 +444,11 @@ SELECT * FROM settings;
 - 样式使用 Tailwind utility class，深色/浅色主题跟随 Nuxt UI 的 `bg-default` / `text-muted` 等语义类
 - Session 信息通过 `router/index.js` 中的 `cachedSession` 缓存，避免每次路由切换都打 `/api/session`
 
+### Git 提交
+
+- Commit message 使用中文，格式 `feat:` / `fix:` / `refactor:` 等前缀 + 简要描述
+- **禁止**在 commit message 中添加 `Co-Authored-By` 或任何 AI 署名行
+
 ## 📚 相关资源
 
 - [CUPS 官方文档](https://www.cups.org/documentation.html)

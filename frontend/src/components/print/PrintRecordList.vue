@@ -47,31 +47,97 @@
             </UBadge>
           </div>
           <!-- 展开详情 -->
-          <div v-if="expandedRecords.has(rec.id)" class="mt-2 pt-2 border-t grid grid-cols-2 gap-1 text-xs text-muted">
-            <div><span class="font-medium">颜色：</span>{{ rec.isColor ? '彩色' : '黑白' }}</div>
-            <div><span class="font-medium">双面：</span>{{ rec.isDuplex ? '是' : '否' }}</div>
-            <div><span class="font-medium">页数：</span>{{ rec.pages }}</div>
-            <div v-if="rec.jobId"><span class="font-medium">任务ID：</span>{{ rec.jobId }}</div>
+          <div v-if="expandedRecords.has(rec.id)" class="mt-2 pt-2 border-t">
+            <div class="grid grid-cols-2 gap-1 text-xs text-muted">
+              <div><span class="font-medium">颜色：</span>{{ rec.isColor ? '彩色' : '黑白' }}</div>
+              <div><span class="font-medium">双面：</span>{{ rec.isDuplex ? '是' : '否' }}</div>
+              <div><span class="font-medium">页数：</span>{{ rec.pages }}</div>
+              <div v-if="rec.jobId"><span class="font-medium">任务ID：</span>{{ rec.jobId }}</div>
+            </div>
+            <div class="mt-2 flex justify-end">
+              <UButton
+                size="xs"
+                variant="outline"
+                icon="i-lucide-printer"
+                :loading="reprintingId === rec.id"
+                @click.stop="openReprintDialog(rec)"
+              >重新打印</UButton>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <UModal v-model:open="showReprintModal">
+      <template #content>
+        <div class="p-6 space-y-4">
+          <h3 class="text-lg font-semibold">重新打印</h3>
+          <div class="text-sm text-muted truncate">文件：{{ reprintRecord?.filename }}</div>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-sm font-medium mb-1">打印机</label>
+              <USelect
+                v-model="reprintForm.printer"
+                :items="printerSelectItems"
+                value-key="value"
+                label-key="label"
+                placeholder="选择打印机"
+              />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">份数</label>
+              <UInput type="number" v-model.number="reprintForm.copies" :min="1" />
+            </div>
+            <div class="flex gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <UCheckbox v-model="reprintForm.color" />
+                <span class="text-sm">彩色</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <UCheckbox v-model="reprintForm.duplex" />
+                <span class="text-sm">双面</span>
+              </label>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2">
+            <UButton variant="ghost" @click="showReprintModal = false">取消</UButton>
+            <UButton color="primary" :loading="reprintingId != null" @click="submitReprint">确认打印</UButton>
+          </div>
+        </div>
+      </template>
+    </UModal>
   </UCard>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { formatTime, formatPrinterName, statusColor, statusText } from '../../utils/format'
 
-defineProps({
+const props = defineProps({
   records: { type: Array, default: () => [] },
-  loading: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },
+  printers: { type: Array, default: () => [] },
+  currentPrinter: { type: String, default: '' }
 })
 
-defineEmits(['refresh'])
+const emit = defineEmits(['refresh', 'reprint'])
 
-const listExpanded = ref(window.innerWidth >= 1024) // 仅用于初始折叠态，用户可手动切换展开/折叠
+const listExpanded = ref(window.innerWidth >= 1024)
 const expandedRecords = ref(new Set())
+
+const showReprintModal = ref(false)
+const reprintingId = ref(null)
+const reprintRecord = ref(null)
+const reprintForm = ref({
+  printer: '',
+  duplex: false,
+  color: true,
+  copies: 1
+})
+
+const printerSelectItems = computed(() =>
+  props.printers.map(p => ({ label: `${p.name} — ${p.uri}`, value: p.uri }))
+)
 
 function toggleRecord(id) {
   const s = new Set(expandedRecords.value)
@@ -79,4 +145,31 @@ function toggleRecord(id) {
   else s.add(id)
   expandedRecords.value = s
 }
+
+function openReprintDialog(rec) {
+  reprintRecord.value = rec
+  reprintForm.value = {
+    printer: props.currentPrinter || rec.printerUri,
+    duplex: rec.isDuplex,
+    color: rec.isColor,
+    copies: 1
+  }
+  showReprintModal.value = true
+}
+
+function submitReprint() {
+  const rec = reprintRecord.value
+  if (!rec) return
+  reprintingId.value = rec.id
+  showReprintModal.value = false
+  emit('reprint', {
+    id: rec.id,
+    printer: reprintForm.value.printer,
+    duplex: reprintForm.value.duplex,
+    color: reprintForm.value.color,
+    copies: reprintForm.value.copies
+  })
+}
+
+defineExpose({ clearReprintLoading: () => { reprintingId.value = null } })
 </script>

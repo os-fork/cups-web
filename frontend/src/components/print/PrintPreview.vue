@@ -37,7 +37,7 @@
         class="bg-white shadow-lg border border-default overflow-hidden transition-all duration-300 ease-in-out relative mx-auto"
       >
         <img v-if="previewType === 'image'" :src="previewUrl" class="w-full h-full object-contain" />
-        <PdfCanvas v-else-if="previewType === 'pdf'" :src="previewUrl" @preview-failed="onPreviewFailed" />
+        <PdfCanvas v-else-if="previewType === 'pdf'" :src="previewUrl" :watermark-text="watermarkText" @preview-failed="onPreviewFailed" />
         <div
           v-else-if="previewType === 'text'"
           class="p-3 text-[8px] leading-tight overflow-hidden h-full text-gray-700 dark:text-gray-300 whitespace-pre-wrap"
@@ -72,7 +72,8 @@ const props = defineProps({
   orientation: { type: String, default: 'portrait' },
   orientationLabel: { type: String, default: '' },
   paperDimText: { type: String, default: '' },
-  paperPreviewStyle: { type: Object, default: () => ({}) }
+  paperPreviewStyle: { type: Object, default: () => ({}) },
+  watermarkText: { type: String, default: '' }
 })
 
 defineEmits(['update:orientation'])

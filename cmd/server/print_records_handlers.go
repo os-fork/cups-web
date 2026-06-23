@@ -2,7 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"cups-web/internal/auth"
+	"cups-web/internal/ipp"
 	"cups-web/internal/store"
 
 	"github.com/gorilla/mux"
@@ -195,4 +199,303 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 		})
 	}
 	return resp
+}
+
+type reprintRequest struct {
+	Printer      string `json:"printer"`
+	Duplex       bool   `json:"duplex"`
+	Color        bool   `json:"color"`
+	Copies       int    `json:"copies"`
+	Orientation  string `json:"orientation"`
+	PaperSize    string `json:"paperSize"`
+	PaperType    string `json:"paperType"`
+	PrintScaling string `json:"printScaling"`
+	PageRange    string `json:"pageRange"`
+	PageSet      string `json:"pageSet"`
+	Mirror       bool   `json:"mirror"`
+}
+
+func reprintHandler(w http.ResponseWriter, r *http.Request) {
+	sess, err := auth.GetSession(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	idStr := mux.Vars(r)["id"]
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid record id")
+		return
+	}
+
+	var req reprintRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Printer == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing printer field")
+		return
+	}
+	if req.Copies < 1 {
+		req.Copies = 1
+	}
+
+	var record store.PrintRecord
+	err = appStore.WithTx(r.Context(), true, func(tx *sql.Tx) error {
+		rec, err := store.GetPrintRecordByID(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		record = rec
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "record not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "failed to load record")
+		return
+	}
+
+	if sess.Role != store.RoleAdmin && record.UserID != sess.UserID {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	origPath := filepath.Join(uploadDir, filepath.FromSlash(record.StoredPath))
+	origFile, err := os.Open(origPath)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "original file not found, may have been cleaned up")
+		return
+	}
+	defer origFile.Close()
+
+	storedRel, storedAbs, err := saveUploadedFile(origFile, record.Filename, uploadDir)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to copy file")
+		return
+	}
+
+	countCtx, cancel := convertTimeoutContext(r.Context())
+	defer cancel()
+	printPath := storedAbs
+	var printCleanup func()
+	printMime := ""
+	var pages int
+	kind := detectFileKind(storedAbs, record.Filename)
+	switch kind {
+	case fileKindPDF:
+		var cerr error
+		pages, cerr = countPDFPages(storedAbs)
+		if cerr != nil {
+			log.Printf("[reprint] countPDFPages failed: %v", cerr)
+			pages = 1
+		}
+		printPath = storedAbs
+		printMime = "application/pdf"
+		if cerr != nil {
+			printMime = "application/octet-stream"
+		}
+	case fileKindOffice:
+		outPath, cleanup, err := convertOfficeToPDF(countCtx, storedAbs)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			return
+		}
+		pages, err = countPDFPages(outPath)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "failed to read pages")
+			return
+		}
+		_, convertedAbs, err := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusInternalServerError, "failed to save converted file")
+			return
+		}
+		printPath = convertedAbs
+		printCleanup = cleanup
+		printMime = "application/pdf"
+	case fileKindOFD:
+		outPath, cleanup, err := convertOFDToPDF(countCtx, storedAbs)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			return
+		}
+		pages, err = countPDFPages(outPath)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "failed to read pages")
+			return
+		}
+		_, convertedAbs, err := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusInternalServerError, "failed to save converted file")
+			return
+		}
+		printPath = convertedAbs
+		printCleanup = cleanup
+		printMime = "application/pdf"
+	case fileKindImage:
+		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			return
+		}
+		_, convertedAbs, err := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusInternalServerError, "failed to save converted file")
+			return
+		}
+		printPath = convertedAbs
+		printCleanup = cleanup
+		printMime = "application/pdf"
+		pages = 1
+	case fileKindText:
+		pages, err = estimateTextPages(storedAbs)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "failed to read pages")
+			return
+		}
+		outPath, cleanup, err := convertTextToPDF(storedAbs, req.Orientation, req.PaperSize)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			return
+		}
+		_, convertedAbs, err := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		if err != nil {
+			cleanup()
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusInternalServerError, "failed to save converted file")
+			return
+		}
+		printPath = convertedAbs
+		printCleanup = cleanup
+		printMime = "application/pdf"
+	default:
+		pages, _, err = countPages(countCtx, storedAbs, record.Filename)
+		if err != nil {
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusBadRequest, "failed to read pages")
+			return
+		}
+	}
+	if pages < 1 {
+		pages = 1
+	}
+	if printCleanup != nil {
+		defer printCleanup()
+	}
+
+	pageSet := req.PageSet
+	if pageSet == "even-reverse" && printMime == "application/pdf" && pages > 1 {
+		reorderedPath, reorderCleanup, rerr := reorderPDFForManualDuplex(printPath, pages, req.PaperSize)
+		if rerr != nil {
+			log.Printf("[reprint] even-reverse reorder failed: %v, falling back to normal even", rerr)
+			pageSet = "even"
+		} else {
+			defer reorderCleanup()
+			printPath = reorderedPath
+			reorderedPages, _ := countPDFPages(reorderedPath)
+			if reorderedPages > 0 {
+				pages = reorderedPages
+			}
+			pageSet = ""
+		}
+	}
+
+	var recordID int64
+	err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
+		rec := store.PrintRecord{
+			UserID:     sess.UserID,
+			PrinterURI: req.Printer,
+			Filename:   record.Filename,
+			StoredPath: storedRel,
+			Pages:      pages,
+			Status:     "queued",
+			IsDuplex:   req.Duplex,
+			IsColor:    req.Color,
+			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		}
+		rid, err := store.InsertPrintRecord(r.Context(), tx, &rec)
+		if err != nil {
+			return err
+		}
+		recordID = rid
+		return nil
+	})
+	if err != nil {
+		_ = os.Remove(storedAbs)
+		writeJSONError(w, http.StatusInternalServerError, "failed to create print record")
+		return
+	}
+
+	f, err := os.Open(printPath)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to open file")
+		return
+	}
+	defer f.Close()
+
+	mimeType := printMime
+	if mimeType == "" {
+		buf := make([]byte, 512)
+		if n, _ := f.Read(buf); n > 0 {
+			mimeType = http.DetectContentType(buf[:n])
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "failed to read file")
+				return
+			}
+		}
+	}
+
+	printOpts := ipp.PrintJobOptions{
+		IsDuplex:     req.Duplex,
+		IsColor:      req.Color,
+		Copies:       req.Copies,
+		Orientation:  req.Orientation,
+		PaperSize:    req.PaperSize,
+		PaperType:    req.PaperType,
+		PrintScaling: req.PrintScaling,
+		PageRange:    req.PageRange,
+		PageSet:      pageSet,
+		Mirror:       req.Mirror,
+		Pages:        pages,
+	}
+
+	job, err := ipp.SendPrintJob(req.Printer, f, mimeType, sess.Username, record.Filename, printOpts)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "print error: "+err.Error())
+		return
+	}
+
+	_ = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
+		return store.UpdatePrintStatus(r.Context(), tx, recordID, "printed", job)
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(printResp{
+		JobID:    job,
+		OK:       true,
+		Pages:    pages,
+		IsDuplex: req.Duplex,
+		IsColor:  req.Color,
+		Copies:   req.Copies,
+	})
 }

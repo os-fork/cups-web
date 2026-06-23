@@ -52,45 +52,36 @@ if [ -d /etc/cups/ppd ]; then
 fi
 
 # ── HP host-based 打印机固件上传（issue #48 真正的修复点） ────────────
-# HP LaserJet 1020 / 1018 / 1005 / P100x / P1505 等"GDI / host-based"机型
-# 每次上电都要先由主机把固件写入 /dev/usb/lpN 才能进入工作状态。物理机上
+# HP LaserJet 1020 / 1018 / 1005 / 1000 / P100x / P1505 等"GDI / host-based"
+# 机型每次上电都要先由主机把固件写入 /dev/usb/lpN 才能进入工作状态。物理机上
 # 由 foo2zjs 安装的 udev 规则（/usr/lib/udev/rules.d/85-hplj10xx.rules）
 # 根据 USB 产品字串匹配后 RUN+="hpljNNNN"，触发同包提供的
 # /usr/lib/udev/hpljNNNN 脚本——脚本内部走 CUPS USB backend 把
 # /lib/firmware/hp/sihpNNNN.dl 上传到打印机。
 #
 # 容器内没有 udev daemon、kernel uevent 也不会自动传进来，原生 udev 规则
-# 不会触发，issue #48 用户反馈的"换 A4 PPD 之后还是打不出来 + 手动
-# `cat sihp1020.dl > /dev/usb/lp0` 后才能打印"就是这一步缺失。
+# 不会触发。这里复用 foo2zjs 上游同一个脚本——手动给它喂上 SUBSYSTEM 环境
+# 变量让防御性检查通过。CUPS backend 自己通过 libusb 枚举设备 ID 里带对应
+# 型号字串的打印机并上传固件。
 #
-# 这里复用 foo2zjs 上游同一个脚本——不重新发明扫 sysfs 的轮子——只是手动
-# 给它喂上 udev 本来会注入的 SUBSYSTEM 环境变量，让脚本里 `[ "$SUBSYSTEM"
-# != "usb" ] && exit` 的防御性检查通过，进入 CUPS USB backend 加载分支。
-# CUPS backend 自己会通过 libusb 枚举设备 ID 里带 "HP...LaserJet...1020"
-# 字串的打印机，把 /lib/firmware/hp/sihp1020.dl 写进去；上传完成后打印机
-# 切到 ready 态、产品字串不再含我们关心的型号，无副作用可重复调用。
+# 后台跑：上游脚本里有 `sleep 3`（避开 udev 探测竞态），同步调用会拖慢
+# cupsd 启动。后台跑既不阻塞 cupsd，也不影响 USB backend。
 #
-# 后台跑：上游脚本里有两个 `sleep 3`（避开 udev 探测竞态），共 6s；同步
-# 调用会拖慢 cupsd 启动。后台跑既不阻塞 cupsd，也不影响 USB backend——
-# 上传期间 cupsd 即使被请求打印也会排队，固件就绪后第一份打印就能成功。
-#
-# 不做定时轮询：CUPS USB backend 不区分"固件已加载/未加载"，重复上传可能
-# 干扰正在打印的设备。打印机断电重连后通常 Docker 设备映射也需要重做
-# （--device=/dev/usb/lp0 是构建期固定的），届时用户重启容器即可重新触发。
-HPLJ_LOADER=/usr/lib/udev/hplj1020
-HPLJ_LOG=/var/log/cups/hplj1020-firmware.log
-if [ -x "$HPLJ_LOADER" ]; then
-    mkdir -p /var/log/cups
-    echo "[entrypoint] dispatching $HPLJ_LOADER in background (issue #48); detailed log: $HPLJ_LOG"
-    # 子 shell 隔离环境变量与 set -x 跟踪输出，避免污染主流程。
-    # 脚本里 log() 函数在无 tty 时默认走 logger → syslog，容器内无 syslog
-    # 守护会丢日志；这里把 stderr/stdout 一起重定向到固定文件，配合上一行
-    # echo 提示用户去哪里看，方便 issue #48 类问题的复诊。
-    (
-        set +x
-        SUBSYSTEM=usb "$HPLJ_LOADER" >>"$HPLJ_LOG" 2>&1 || true
-    ) &
-fi
+# 覆盖型号：hplj1000/1005/1018/1020（foo2zjs）+ hpljP1005/P1006/P1505（foo2xqx）。
+# 仅对固件文件存在且 udev 脚本可执行的型号调用。
+HPLJ_LOADERS="hplj1000 hplj1005 hplj1018 hplj1020 hpljP1005 hpljP1006 hpljP1505"
+HPLJ_FW_LOG=/var/log/cups/hp-firmware.log
+mkdir -p /var/log/cups
+for loader_name in $HPLJ_LOADERS; do
+    loader_path="/usr/lib/udev/${loader_name}"
+    if [ -x "$loader_path" ]; then
+        echo "[entrypoint] dispatching ${loader_name} in background; log: ${HPLJ_FW_LOG}"
+        (
+            set +x
+            SUBSYSTEM=usb "$loader_path" >>"$HPLJ_FW_LOG" 2>&1 || true
+        ) &
+    fi
+done
 
 # ── 后台拉起 avahi-daemon 与 ipp-usb：用于 driverless / IPP Everywhere 发现 ──
 # 其中 ipp-usb 负责把 USB 直连的 IPP Everywhere 打印机（如 Brother DCP-T425W）

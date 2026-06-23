@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"cups-web/internal/auth"
@@ -61,6 +63,19 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	pageRange := r.FormValue("page_range")
 	pageSet := r.FormValue("page_set")
 	mirror := r.FormValue("mirror") == "true"
+	watermarkText := strings.TrimSpace(r.FormValue("watermark_text"))
+
+	var saveHistory bool
+	if err := appStore.WithTx(r.Context(), true, func(tx *sql.Tx) error {
+		v, err := store.GetSettingInt(r.Context(), tx, store.SettingSaveHistory, 1)
+		if err != nil {
+			return err
+		}
+		saveHistory = v != 0
+		return nil
+	}); err != nil {
+		saveHistory = true
+	}
 
 	storedRel, storedAbs, err := saveUploadedFile(file, fh.Filename, uploadDir)
 	if err != nil {
@@ -198,6 +213,16 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		defer printCleanup()
 	}
 
+	if watermarkText != "" && printMime == "application/pdf" {
+		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermarkText)
+		if wmErr != nil {
+			log.Printf("[print] watermark failed: %v", wmErr)
+		} else {
+			defer wmCleanup()
+			printPath = wmPath
+		}
+	}
+
 	// Handle even-reverse: reorder PDF pages for manual duplex (even pages
 	// in reverse order, with a blank page prepended when total is odd).
 	if pageSet == "even-reverse" && printMime == "application/pdf" && pages > 1 {
@@ -219,34 +244,36 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	sess, _ := auth.GetSession(r)
 	var recordID int64
 
-	err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
-		user, err := store.GetUserByID(r.Context(), tx, sess.UserID)
-		if err != nil {
-			return err
-		}
+	if saveHistory {
+		err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
+			user, err := store.GetUserByID(r.Context(), tx, sess.UserID)
+			if err != nil {
+				return err
+			}
 
-		rec := store.PrintRecord{
-			UserID:     user.ID,
-			PrinterURI: printer,
-			Filename:   fh.Filename,
-			StoredPath: storedRel,
-			Pages:      pages,
-			Status:     "queued",
-			IsDuplex:   isDuplex,
-			IsColor:    isColor,
-			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-		}
-		id, err := store.InsertPrintRecord(r.Context(), tx, &rec)
+			rec := store.PrintRecord{
+				UserID:     user.ID,
+				PrinterURI: printer,
+				Filename:   fh.Filename,
+				StoredPath: storedRel,
+				Pages:      pages,
+				Status:     "queued",
+				IsDuplex:   isDuplex,
+				IsColor:    isColor,
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+			}
+			id, err := store.InsertPrintRecord(r.Context(), tx, &rec)
+			if err != nil {
+				return err
+			}
+			recordID = id
+			return nil
+		})
 		if err != nil {
-			return err
+			_ = os.Remove(storedAbs)
+			writeJSONError(w, http.StatusInternalServerError, "failed to create print record")
+			return
 		}
-		recordID = id
-		return nil
-	})
-	if err != nil {
-		_ = os.Remove(storedAbs)
-		writeJSONError(w, http.StatusInternalServerError, "failed to create print record")
-		return
 	}
 
 	f, err := os.Open(printPath)
@@ -291,9 +318,18 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
-		return store.UpdatePrintStatus(r.Context(), tx, recordID, "printed", job)
-	})
+	if saveHistory && recordID > 0 {
+		_ = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
+			return store.UpdatePrintStatus(r.Context(), tx, recordID, "printed", job)
+		})
+	}
+	if !saveHistory {
+		_ = os.Remove(storedAbs)
+		cRel := convertedRelPath(storedRel)
+		if cRel != "" {
+			_ = os.Remove(filepath.Join(uploadDir, filepath.FromSlash(cRel)))
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(printResp{

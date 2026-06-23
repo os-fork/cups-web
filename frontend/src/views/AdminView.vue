@@ -83,12 +83,18 @@
           <label class="block text-sm font-medium mb-1">自动清理天数</label>
           <UInput type="number" step="1" v-model="settings.retentionDays" placeholder="例如 30" />
         </div>
-        <div class="flex items-end gap-2">
+        <div>
+          <label class="flex items-center gap-2 cursor-pointer h-9">
+            <UCheckbox v-model="settings.saveHistory" />
+            <span class="text-sm">保存打印历史</span>
+          </label>
+        </div>
+        <div class="flex items-end gap-2 md:col-span-2">
           <UButton color="primary" @click="saveSettings" icon="i-lucide-save" :loading="savingSettings" :disabled="savingSettings">保存设置</UButton>
-          <UButton variant="outline" @click="triggerCleanup" icon="i-lucide-trash-2" :loading="cleaningUp" :disabled="cleaningUp">立即清理</UButton>
+          <UButton variant="outline" @click="showCleanupConfirm = true" icon="i-lucide-trash-2" :loading="cleaningUp" :disabled="cleaningUp">立即清理</UButton>
         </div>
       </div>
-      <div class="text-sm text-muted mt-2">自动清理会删除打印记录与文件，并压缩数据库。点击"立即清理"可手动触发。</div>
+      <div class="text-sm text-muted mt-2">自动清理会在设定天数后删除过期打印记录与文件。"立即清理"将删除所有打印记录和文件。关闭"保存打印历史"后，新的打印任务将不再产生记录。</div>
     </UCard>
 
     <UModal v-model:open="showDeleteModal">
@@ -100,6 +106,19 @@
           <div class="flex justify-end gap-2">
             <UButton variant="ghost" @click="showDeleteModal = false">取消</UButton>
             <UButton color="error" :loading="!!deletingUserId" @click="executeDelete">确认删除</UButton>
+          </div>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal v-model:open="showCleanupConfirm">
+      <template #content>
+        <div class="p-6 space-y-4">
+          <h3 class="text-lg font-semibold">确认清理</h3>
+          <p>此操作将<strong>删除所有打印记录和相关文件</strong>，且不可撤销。</p>
+          <div class="flex justify-end gap-2">
+            <UButton variant="ghost" @click="showCleanupConfirm = false">取消</UButton>
+            <UButton color="error" :loading="cleaningUp" @click="triggerCleanup">确认清理</UButton>
           </div>
         </div>
       </template>
@@ -127,7 +146,8 @@ const form = ref({
 })
 const printFilters = ref({ username: '', start: '', end: '' })
 const printRecords = ref([])
-const settings = ref({ retentionDays: '' })
+const settings = ref({ retentionDays: '', saveHistory: true })
+const showCleanupConfirm = ref(false)
 
 const savingUser = ref(false)
 const savingSettings = ref(false)
@@ -306,9 +326,11 @@ async function loadSettings() {
   }
   const data = await resp.json()
   settings.value.retentionDays = String(data.retentionDays || 0)
+  settings.value.saveHistory = data.saveHistory !== false
 }
 
 async function triggerCleanup() {
+  showCleanupConfirm.value = false
   cleaningUp.value = true
   try {
     const resp = await fetch('/api/admin/cleanup', {
@@ -322,7 +344,14 @@ async function triggerCleanup() {
       if (resp.status === 401) emit('logout')
       return
     }
-    toast.add({ title: '清理完成', description: '已清理过期打印记录与文件', color: 'success', icon: 'i-lucide-check-circle' })
+    const data = await resp.json()
+    const count = data.deleted || 0
+    toast.add({
+      title: '清理完成',
+      description: count > 0 ? `已删除 ${count} 条打印记录及相关文件` : '没有需要清理的记录',
+      color: 'success',
+      icon: 'i-lucide-check-circle'
+    })
     await loadPrintRecords()
   } finally {
     cleaningUp.value = false
@@ -333,7 +362,8 @@ async function saveSettings() {
   savingSettings.value = true
   try {
     const payload = {
-      retentionDays: parseInt(settings.value.retentionDays || '0', 10)
+      retentionDays: parseInt(settings.value.retentionDays || '0', 10),
+      saveHistory: settings.value.saveHistory
     }
     const resp = await fetch('/api/admin/settings', {
       method: 'PUT',
