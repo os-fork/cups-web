@@ -1,0 +1,19 @@
+# GHCR 薄层镜像：基于已构建好的 hanxi/cups 做最小叠加
+#
+# 与 cups/Dockerfile 的区别：
+#   - cups/Dockerfile      从源码编译 CUPS + 所有驱动（~40 分钟）
+#   - cups/Dockerfile.ghcr 只替换 entrypoint.sh + 新增 watchdog（~1 分钟）
+#
+# 镜像只多两件事：
+#   1. 替换 entrypoint.sh → 启动时拉起 usb-watchdog.sh
+#   2. 新增 /usr/local/bin/usb-watchdog.sh → USB 打印机断电重连自动恢复
+#
+# 基础镜像 hanxi/cups 由 cups/Dockerfile 构建，推送到 Docker Hub。
+# 本文件只用于 GitHub Container Registry (ghcr.io) 的推送工作流。
+
+ARG CUPS_BASE_TAG=master
+FROM hanxi/cups:${CUPS_BASE_TAG}
+
+COPY usb-watchdog.sh /usr/local/bin/
+COPY entrypoint.sh /
+RUN chmod +x /usr/local/bin/usb-watchdog.sh /entrypoint.sh

@@ -20,6 +20,11 @@ on:
         required: false
         type: string
         default: 'linux/amd64,linux/arm64,linux/arm/v7'
+      base_tag:
+        description: '基础镜像 hanxi/cups 的 tag（默认 master）'
+        required: false
+        type: string
+        default: 'master'
 
 permissions:
   packages: write
@@ -62,8 +67,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./cups
-          file: ./cups/Dockerfile
+          file: ./cups/Dockerfile.ghcr
           platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
+          build-args: |
+            CUPS_BASE_TAG=${{ inputs.base_tag || 'master' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
