@@ -111,4 +111,8 @@ if command -v ipp-usb >/dev/null 2>&1; then
     (ipp-usb >/var/log/ipp-usb/ipp-usb.log 2>&1 &) || true
 fi
 
+# ── USB 打印机断电重连自动恢复（后台，不阻塞 cupsd） ──
+# 详见 usb-watchdog.sh；从 entrypoint.sh 删除下面这行即可禁用。
+/usr/local/bin/usb-watchdog.sh &
+
 exec /usr/sbin/cupsd -f

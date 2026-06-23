@@ -204,6 +204,7 @@ VOLUME [ "/etc/cups" ]
 EXPOSE 631
 
 COPY entrypoint.sh /
-RUN chmod +x /entrypoint.sh
+COPY usb-watchdog.sh /usr/local/bin/
+RUN chmod +x /entrypoint.sh /usr/local/bin/usb-watchdog.sh
 
 CMD ["/entrypoint.sh"]
