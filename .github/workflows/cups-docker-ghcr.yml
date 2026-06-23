@@ -21,10 +21,10 @@ on:
         type: string
         default: 'linux/amd64,linux/arm64,linux/arm/v7'
       base_tag:
-        description: '基础镜像 hanxi/cups 的 tag（默认 master）'
+        description: '基础镜像 hanxi/cups 的 tag（默认 latest）'
         required: false
         type: string
-        default: 'master'
+        default: 'latest'
 
 permissions:
   packages: write
@@ -58,10 +58,10 @@ jobs:
           tags: |
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=ref,event=branch,enable=${{ inputs.tag == '' }}
-            type=semver,pattern={{version}},enable=${{ inputs.tag == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.tag == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.tag == '' }}
-            type=raw,value=latest,enable=${{ inputs.tag == '' && github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},enable=${{ inputs.tag == '' && github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.tag == '' && github.ref_type == 'tag' }}
+            type=semver,pattern={{major}},enable=${{ inputs.tag == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.tag == '' }}
 
       - name: Build and push ghcr.io/hanxi/cups (multi-arch)
         uses: docker/build-push-action@v6

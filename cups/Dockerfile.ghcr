@@ -11,7 +11,7 @@
 # 基础镜像 hanxi/cups 由 cups/Dockerfile 构建，推送到 Docker Hub。
 # 本文件只用于 GitHub Container Registry (ghcr.io) 的推送工作流。
 
-ARG CUPS_BASE_TAG=master
+ARG CUPS_BASE_TAG=latest
 FROM hanxi/cups:${CUPS_BASE_TAG}
 
 COPY usb-watchdog.sh /usr/local/bin/
