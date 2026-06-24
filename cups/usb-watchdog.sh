@@ -25,7 +25,14 @@ mkdir -p "$(dirname "${WATCHDOG_LOG}")"
 # 给 cupsd 启动和初始化 backend 的窗口期
 sleep 10
 
+echo "[usb-watchdog] $(date '+%Y-%m-%d %H:%M:%S') started, log=${WATCHDOG_LOG}"
+
+SCAN_COUNT=0
+HEARTBEAT_INTERVAL=60  # 每 60 次扫描（10 分钟）输出一次心跳
+
 while true; do
+    SCAN_COUNT=$((SCAN_COUNT + 1))
+
     # ── 通过 lpstat -e 扫描当前所有在线的 USB 打印机 ──
     # lpstat -e 输出格式示例：
     #   usb://EPSON%2FL380%20Series?serial=...&interface=1
@@ -46,7 +53,10 @@ while true; do
     # lpstat -a 输出示例：
     #   EPSON_L380 accepting requests since ...
     #   EPSON_L380 not accepting requests since ...  ← 卡住的
+    STOPPED_COUNT=0
+    RECOVERED=0
     for p in $(lpstat -a 2>/dev/null | grep 'not accepting' | awk '{print $1}'); do
+        STOPPED_COUNT=$((STOPPED_COUNT + 1))
         uri=$(lpstat -v "$p" 2>/dev/null | awk '{print $NF}')
         case "${uri}" in
             usb://*)
@@ -57,10 +67,16 @@ while true; do
                     echo "[usb-watchdog] $(date '+%Y-%m-%d %H:%M:%S') re-enabling $p (USB device ${uri_vidpid} reappeared)"
                     cupsenable "$p" 2>/dev/null || true
                     accept "$p" 2>/dev/null || true
+                    RECOVERED=$((RECOVERED + 1))
                 fi
                 ;;
         esac
     done
+
+    # 定期心跳：确认 watchdog 仍在运行，同时汇报当前状态
+    if [ $((SCAN_COUNT % HEARTBEAT_INTERVAL)) -eq 0 ]; then
+        echo "[usb-watchdog] $(date '+%Y-%m-%d %H:%M:%S') heartbeat #${SCAN_COUNT} | online devices: $(echo "${AVAILABLE_IDS}" | wc -w) | stopped printers: ${STOPPED_COUNT} | recovered this cycle: ${RECOVERED}"
+    fi
 
     sleep 10
 done >>"${WATCHDOG_LOG}" 2>&1
