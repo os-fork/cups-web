@@ -133,8 +133,9 @@ func printRecordFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	absPath := filepath.Join(uploadDir, filepath.FromSlash(record.StoredPath))
-	f, err := os.Open(absPath)
+	// os.OpenInRoot 将文件访问限制在 uploadDir 目录树内，即便 StoredPath 被污染
+	// 成 ../ 逃逸路径也会被 OS 层拒绝（纵深防御，Go 1.24+）。
+	f, err := os.OpenInRoot(uploadDir, filepath.FromSlash(record.StoredPath))
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "file not found")
 		return
@@ -275,8 +276,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	origPath := filepath.Join(uploadDir, filepath.FromSlash(record.StoredPath))
-	origFile, err := os.Open(origPath)
+	origFile, err := os.OpenInRoot(uploadDir, filepath.FromSlash(record.StoredPath))
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "original file not found, may have been cleaned up")
 		return

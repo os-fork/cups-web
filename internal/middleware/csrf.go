@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"cups-web/internal/auth"
@@ -48,7 +49,8 @@ func ValidateCSRF(next http.Handler) http.Handler {
 			return
 		}
 		header := r.Header.Get("X-CSRF-Token")
-		if header == "" || header != cookie.Value {
+		// 常数时间比较，避免通过响应时序侧信道逐字节推断 token。
+		if header == "" || subtle.ConstantTimeCompare([]byte(header), []byte(cookie.Value)) != 1 {
 			http.Error(w, "invalid csrf token", http.StatusForbidden)
 			return
 		}

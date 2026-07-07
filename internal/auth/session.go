@@ -6,12 +6,29 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"cups-web/internal/store"
 
 	"github.com/gorilla/securecookie"
 )
+
+var (
+	secureCookieOnce sync.Once
+	secureCookieFlag bool
+)
+
+// CookieSecure 报告是否应在会话 / CSRF cookie 上设置 Secure 属性。由环境变量
+// COOKIE_SECURE=true 开启（HTTPS 部署应开启），默认关闭以兼容 HTTP 内网部署。
+func CookieSecure() bool {
+	secureCookieOnce.Do(func() {
+		secureCookieFlag = strings.EqualFold(strings.TrimSpace(os.Getenv("COOKIE_SECURE")), "true")
+	})
+	return secureCookieFlag
+}
 
 var s *securecookie.SecureCookie
 
@@ -97,7 +114,7 @@ func SetSession(w http.ResponseWriter, sess Session) error {
 		Value:    encoded,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false,
+		Secure:   CookieSecure(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	}
@@ -111,7 +128,7 @@ func ClearSession(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false,
+		Secure:   CookieSecure(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	}

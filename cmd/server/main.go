@@ -64,6 +64,10 @@ func main() {
 	}
 
 	r := mux.NewRouter()
+	// 全局安全中间件：安全响应头 + 基于 Sec-Fetch-Site 的跨源 CSRF 防护
+	// （Go 1.25 http.CrossOriginProtection，作为 double-submit 之外的纵深防御）。
+	r.Use(middleware.SecurityHeaders)
+	r.Use(middleware.CrossOriginProtection())
 
 	api := r.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/login", LoginHandler).Methods("POST")
@@ -89,7 +93,8 @@ func main() {
 
 		printers, err := ipp.ListPrinters(cupsHost)
 		if err != nil {
-			http.Error(w, "failed to list printers: "+err.Error(), http.StatusInternalServerError)
+			log.Printf("[printers] list failed: %v", err)
+			http.Error(w, "failed to list printers", http.StatusInternalServerError)
 			return
 		}
 

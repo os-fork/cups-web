@@ -40,6 +40,9 @@ type PrintJobOptions struct {
 // IPP Print-Job request. It returns a human-readable status or job identifier
 // when available.
 func SendPrintJob(printerURI string, r io.Reader, mime string, username string, jobName string, opts PrintJobOptions) (string, error) {
+	if err := validatePrinterURI(printerURI); err != nil {
+		return "", err
+	}
 	// IPP attribute must use ipp:// scheme; HTTP transport uses http://
 	ippURI := httpToIppURI(printerURI)
 
@@ -191,7 +194,8 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	httpReq.Header.Set("Content-Type", goipp.ContentType)
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// 打印任务可能上传较大文档，整体超时放宽到 120s；连接层仍受 SSRF 校验。
+	client := newSafeClient(120 * time.Second)
 	log.Printf("[ipp] SendPrintJob: sending HTTP POST to %q", printerURI)
 	resp, err := client.Do(httpReq)
 	if resp != nil {
@@ -209,7 +213,7 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	}
 
 	var rsp goipp.Message
-	if err := rsp.Decode(resp.Body); err != nil {
+	if err := rsp.Decode(limitedBody(resp.Body)); err != nil {
 		log.Printf("[ipp] SendPrintJob: decode error: %v", err)
 		return "", fmt.Errorf("decode ipp response: %w", err)
 	}
@@ -370,6 +374,9 @@ func httpToIppURI(uri string) string {
 // GetPrinterAttributes queries a printer via IPP Get-Printer-Attributes and returns structured info.
 func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 	log.Printf("[ipp] GetPrinterAttributes start, uri=%q", printerURI)
+	if err := validatePrinterURI(printerURI); err != nil {
+		return nil, err
+	}
 
 	// IPP attribute must use ipp:// scheme; HTTP transport uses http://
 	ippURI := httpToIppURI(printerURI)
@@ -397,7 +404,7 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
 	log.Printf("[ipp] sending HTTP POST to %q", printerURI)
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := newSafeClient(dialTimeout).Do(httpReq)
 	if resp != nil {
 		defer resp.Body.Close()
 		log.Printf("[ipp] HTTP response status: %s", resp.Status)
@@ -413,7 +420,7 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 
 	log.Printf("[ipp] decoding IPP response")
 	var rsp goipp.Message
-	if err := rsp.Decode(resp.Body); err != nil {
+	if err := rsp.Decode(limitedBody(resp.Body)); err != nil {
 		log.Printf("[ipp] decode error: %v", err)
 		return nil, fmt.Errorf("decode ipp response: %w", err)
 	}
@@ -529,7 +536,10 @@ func ListPrinters(host string) ([]Printer, error) {
 
 	listURL := (&url.URL{Scheme: "http", Host: hostOnly, Path: "/printers"}).String()
 
-	resp, err := http.Get(listURL)
+	if err := validatePrinterURI(listURL); err != nil {
+		return nil, err
+	}
+	resp, err := newSafeClient(dialTimeout).Get(listURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch printers page: %w", err)
 	}
@@ -539,7 +549,7 @@ func ListPrinters(host string) ([]Printer, error) {
 		return nil, fmt.Errorf("http status: %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(limitedBody(resp.Body))
 	if err != nil {
 		return nil, fmt.Errorf("read printers page: %w", err)
 	}

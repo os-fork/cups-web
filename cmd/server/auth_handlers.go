@@ -3,9 +3,9 @@ package main
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"cups-web/internal/auth"
@@ -13,6 +13,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// dummyBcryptHash 是一个合法的 bcrypt 哈希，仅用于在用户名不存在时执行一次
+// 等价的密码比较，抹平「用户存在与否」的响应时序差异，防止用户名枚举。
+const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 type loginReq struct {
 	Username string `json:"username"`
@@ -35,9 +39,8 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 }
 
 func randomToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	// crypto/rand.Text 返回密码学安全的随机字符串（Go 1.24+）。
+	return rand.Text()
 }
 
 // LoginHandler handles POST /api/login
@@ -46,6 +49,14 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Username == "" || req.Password == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing credentials")
+		return
+	}
+
+	// 暴力破解防护：同一 IP+用户名连续失败过多则临时锁定。
+	key := loginKey(r, req.Username)
+	if ok, _ := loginAllowed(key); !ok {
+		log.Printf("[login] rate limited: key=%q", key)
+		writeJSONError(w, http.StatusTooManyRequests, "too many attempts, please try again later")
 		return
 	}
 
@@ -60,6 +71,9 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// 用户不存在也执行一次等价 bcrypt 比较，抹平时序差异防用户枚举。
+			_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(req.Password))
+			registerLoginFailure(key)
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
@@ -68,9 +82,11 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+		registerLoginFailure(key)
 		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	clearLoginFailures(key)
 
 	sess := auth.Session{UserID: user.ID, Username: user.Username, Role: user.Role}
 	if err := auth.SetSession(w, sess); err != nil {
@@ -84,7 +100,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   false,
+		Secure:   auth.CookieSecure(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	}
@@ -115,7 +131,7 @@ func CSRFHandler(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   false,
+		Secure:   auth.CookieSecure(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	}

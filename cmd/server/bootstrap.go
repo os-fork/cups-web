@@ -19,6 +19,10 @@ func ensureDefaultAdmin(ctx context.Context) error {
 					return err
 				}
 			}
+			// 若仍是默认密码，启动时醒目告警，提示尽快修改。
+			if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte("admin")) == nil {
+				log.Printf("[SECURITY WARNING] admin 账号仍在使用默认密码 admin，请立即登录并修改密码！")
+			}
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -38,6 +42,7 @@ func ensureDefaultAdmin(ctx context.Context) error {
 			return err
 		}
 		log.Printf("default admin created: admin")
+		log.Printf("[SECURITY WARNING] 已创建默认管理员 admin/admin，请立即登录并修改密码！")
 		return nil
 	})
 }
