@@ -102,4 +102,43 @@ if command -v ipp-usb >/dev/null 2>&1; then
     (ipp-usb >/var/log/ipp-usb/ipp-usb.log 2>&1 &) || true
 fi
 
+# ── 让 AirPrint 面板把 A4 作为已装纸(media-ready)通告(issue #82) ──────
+# issue #48 只把 PPD 的 *DefaultPageSize 改成 A4(对应 IPP media-default)，
+# 但 iPhone 原生 AirPrint 打印面板的「纸张大小」候选列表读的是 media-ready
+# /media(当前已装纸)，不是 media-default。实测(issue #82 截图)即使
+# media-default 已是 A4，iOS 面板仍只列出 Letter/Env10 且勾选 Letter——
+# 说明只改 default 不够，得把队列的当前媒体(media-ready)也显式设成 A4。
+#
+# 手法：cupsd 起来后对存量 HP 1020 队列执行
+#   lpadmin -p NAME -o media=iso_a4_210x297mm
+# 该选项写入队列默认媒体，CUPS 随之把 media-ready 通告成 A4，iOS 面板即可
+# 选中 A4。lpadmin 需要 cupsd 在线(走 IPP)，所以放后台等 cupsd 就绪后执行，
+# 不阻塞启动；exec 替换父进程不会杀掉已 fork 的后台子 shell。
+# 命中条件与 issue #48 的一次性 PPD 修补一致(HP 1020 foo2zjs 双重指纹 +
+# PageSize 列表含 A4)，队列名由 /etc/cups/ppd/<printer>.ppd 文件名反推。
+# 仅当当前默认纸张仍是 A4(即用户没在 CUPS UI 里显式改过)时才动，避免覆盖
+# 用户的手动选择。任何一台失败只告警不影响其他队列与 cupsd。
+(
+    set +x
+    for _ in $(seq 1 30); do
+        lpstat -r >/dev/null 2>&1 && break
+        sleep 1
+    done
+    if [ -d /etc/cups/ppd ]; then
+        for ppd in /etc/cups/ppd/*.ppd; do
+            [ -f "$ppd" ] || continue
+            grep -q '^\*Product:[[:space:]]*"(HP LaserJet 1020)"' "$ppd" || continue
+            grep -q '^\*FoomaticIDs:[[:space:]]\+HP-LaserJet_1020[[:space:]]\+foo2zjs-z1' "$ppd" || continue
+            grep -q '^\*PageSize A4' "$ppd" || continue
+            grep -q '^\*DefaultPageSize:[[:space:]]\+A4[[:space:]]*$' "$ppd" || continue
+            printer_name="$(basename "$ppd" .ppd)"
+            if lpadmin -p "$printer_name" -o media=iso_a4_210x297mm 2>/dev/null; then
+                echo "[entrypoint] set media(ready)=A4 on $printer_name (issue #82)"
+            else
+                echo "[entrypoint] WARN: failed to set media=A4 on $printer_name (issue #82)"
+            fi
+        done
+    fi
+) &
+
 exec /usr/sbin/cupsd -f
