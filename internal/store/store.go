@@ -106,6 +106,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL,
 			is_duplex INTEGER NOT NULL DEFAULT 0,
 			is_color INTEGER NOT NULL DEFAULT 1,
+			copies INTEGER NOT NULL DEFAULT 1,
+			orientation TEXT NOT NULL DEFAULT 'portrait',
+			paper_size TEXT NOT NULL DEFAULT 'A4',
+			paper_type TEXT NOT NULL DEFAULT 'plain',
+			media_source TEXT NOT NULL DEFAULT 'auto',
+			print_scaling TEXT NOT NULL DEFAULT 'fit',
+			page_range TEXT NOT NULL DEFAULT '',
+			page_set TEXT NOT NULL DEFAULT 'all',
+			mirror INTEGER NOT NULL DEFAULT 0,
+			watermark_text TEXT NOT NULL DEFAULT '',
+			number_up INTEGER NOT NULL DEFAULT 1,
+			number_up_layout TEXT NOT NULL DEFAULT 'lrtb',
+			page_border TEXT NOT NULL DEFAULT 'none',
 			created_at TEXT NOT NULL,
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
@@ -124,6 +137,28 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := addColumnIfMissing(ctx, s.DB, "print_jobs", "is_color INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+	// 完整打印参数落库，供「重新打印」精确预填第一次的每一项设置（Issue #68）。
+	// 旧库热升级：老记录这些列取默认值，重打时即退化为合理默认。
+	printJobOptionCols := []string{
+		"copies INTEGER NOT NULL DEFAULT 1",
+		"orientation TEXT NOT NULL DEFAULT 'portrait'",
+		"paper_size TEXT NOT NULL DEFAULT 'A4'",
+		"paper_type TEXT NOT NULL DEFAULT 'plain'",
+		"media_source TEXT NOT NULL DEFAULT 'auto'",
+		"print_scaling TEXT NOT NULL DEFAULT 'fit'",
+		"page_range TEXT NOT NULL DEFAULT ''",
+		"page_set TEXT NOT NULL DEFAULT 'all'",
+		"mirror INTEGER NOT NULL DEFAULT 0",
+		"watermark_text TEXT NOT NULL DEFAULT ''",
+		"number_up INTEGER NOT NULL DEFAULT 1",
+		"number_up_layout TEXT NOT NULL DEFAULT 'lrtb'",
+		"page_border TEXT NOT NULL DEFAULT 'none'",
+	}
+	for _, col := range printJobOptionCols {
+		if err := addColumnIfMissing(ctx, s.DB, "print_jobs", col); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
 	}
 
 	if _, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`,

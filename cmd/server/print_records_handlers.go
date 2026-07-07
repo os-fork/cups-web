@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"cups-web/internal/auth"
@@ -31,7 +32,23 @@ type printRecordResponse struct {
 	Status     string `json:"status"`
 	IsDuplex   bool   `json:"isDuplex"`
 	IsColor    bool   `json:"isColor"`
-	CreatedAt  string `json:"createdAt"`
+
+	// 完整打印参数快照，供前端「重新打印」预填第一次的设置（Issue #68）。
+	Copies         int    `json:"copies"`
+	Orientation    string `json:"orientation"`
+	PaperSize      string `json:"paperSize"`
+	PaperType      string `json:"paperType"`
+	MediaSource    string `json:"mediaSource"`
+	PrintScaling   string `json:"printScaling"`
+	PageRange      string `json:"pageRange"`
+	PageSet        string `json:"pageSet"`
+	Mirror         bool   `json:"mirror"`
+	WatermarkText  string `json:"watermarkText"`
+	NumberUp       int    `json:"numberUp"`
+	NumberUpLayout string `json:"numberUpLayout"`
+	PageBorder     string `json:"pageBorder"`
+
+	CreatedAt string `json:"createdAt"`
 }
 
 func printRecordsHandler(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +213,22 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 			Status:     rec.Status,
 			IsDuplex:   rec.IsDuplex,
 			IsColor:    rec.IsColor,
-			CreatedAt:  rec.CreatedAt,
+
+			Copies:         rec.Copies,
+			Orientation:    rec.Orientation,
+			PaperSize:      rec.PaperSize,
+			PaperType:      rec.PaperType,
+			MediaSource:    rec.MediaSource,
+			PrintScaling:   rec.PrintScaling,
+			PageRange:      rec.PageRange,
+			PageSet:        rec.PageSet,
+			Mirror:         rec.Mirror,
+			WatermarkText:  rec.WatermarkText,
+			NumberUp:       rec.NumberUp,
+			NumberUpLayout: rec.NumberUpLayout,
+			PageBorder:     rec.PageBorder,
+
+			CreatedAt: rec.CreatedAt,
 		})
 	}
 	return resp
@@ -207,13 +239,15 @@ type reprintRequest struct {
 	Duplex       bool   `json:"duplex"`
 	Color        bool   `json:"color"`
 	Copies       int    `json:"copies"`
-	Orientation  string `json:"orientation"`
-	PaperSize    string `json:"paperSize"`
-	PaperType    string `json:"paperType"`
-	PrintScaling string `json:"printScaling"`
-	PageRange    string `json:"pageRange"`
-	PageSet      string `json:"pageSet"`
-	Mirror       bool   `json:"mirror"`
+	Orientation   string `json:"orientation"`
+	PaperSize     string `json:"paperSize"`
+	PaperType     string `json:"paperType"`
+	MediaSource   string `json:"mediaSource"`
+	PrintScaling  string `json:"printScaling"`
+	PageRange     string `json:"pageRange"`
+	PageSet       string `json:"pageSet"`
+	Mirror        bool   `json:"mirror"`
+	WatermarkText string `json:"watermarkText"`
 
 	NumberUp       int    `json:"numberUp"`
 	NumberUpLayout string `json:"numberUpLayout"`
@@ -413,6 +447,16 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		defer printCleanup()
 	}
 
+	if watermark := strings.TrimSpace(req.WatermarkText); watermark != "" && printMime == "application/pdf" {
+		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermark)
+		if wmErr != nil {
+			log.Printf("[reprint] watermark failed: %v", wmErr)
+		} else {
+			defer wmCleanup()
+			printPath = wmPath
+		}
+	}
+
 	pageSet := req.PageSet
 	if pageSet == "even-reverse" && printMime == "application/pdf" && pages > 1 {
 		reorderedPath, reorderCleanup, rerr := reorderPDFForManualDuplex(printPath, pages, req.PaperSize)
@@ -441,7 +485,22 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 			Status:     "queued",
 			IsDuplex:   req.Duplex,
 			IsColor:    req.Color,
-			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+
+			Copies:         req.Copies,
+			Orientation:    req.Orientation,
+			PaperSize:      req.PaperSize,
+			PaperType:      req.PaperType,
+			MediaSource:    req.MediaSource,
+			PrintScaling:   req.PrintScaling,
+			PageRange:      req.PageRange,
+			PageSet:        req.PageSet,
+			Mirror:         req.Mirror,
+			WatermarkText:  req.WatermarkText,
+			NumberUp:       req.NumberUp,
+			NumberUpLayout: req.NumberUpLayout,
+			PageBorder:     req.PageBorder,
+
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		rid, err := store.InsertPrintRecord(r.Context(), tx, &rec)
 		if err != nil {
@@ -482,6 +541,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		Orientation:  req.Orientation,
 		PaperSize:    req.PaperSize,
 		PaperType:    req.PaperType,
+		MediaSource:  req.MediaSource,
 		PrintScaling: req.PrintScaling,
 		PageRange:    req.PageRange,
 		PageSet:      pageSet,

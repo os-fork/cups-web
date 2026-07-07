@@ -231,7 +231,7 @@
             :watermark-text="watermarkText"
           />
         </div>
-        <PrintRecordList ref="recordListRef" :records="printRecords" :loading="loadingRecords" :printers="printers" :current-printer="printer" @refresh="loadPrintRecords" @reprint="handleReprint" />
+        <PrintRecordList ref="recordListRef" :records="printRecords" :loading="loadingRecords" :printers="printers" :current-printer="printer" :media-source-supported="printerInfo?.mediaSourceSupported || []" @refresh="loadPrintRecords" @reprint="handleReprint" />
         <PrinterStatus :printer-info="printerInfo" :printer-uri="printer" :loading="loadingPrinterInfo" :error="printerInfoError" @refresh="loadPrinterInfo" />
       </div>
     </div>
@@ -902,22 +902,29 @@ async function loadPrintRecords(silent = false) {
   }
 }
 
-async function handleReprint({ id, printer: reprintPrinter, duplex: reprintDuplex, color: reprintColor, copies: reprintCopies, numberUp: reprintNumberUp, numberUpLayout: reprintNumberUpLayout, pageBorder: reprintPageBorder }) {
+async function handleReprint(payload) {
+  const { id } = payload
   try {
+    // 重打对话框已复用 PrintOptions，选项完全由弹窗内的表单决定，直接透传给后端。
     const resp = await apiFetch(`/api/print-records/${id}/reprint`, {
       method: 'POST',
       body: JSON.stringify({
-        printer: reprintPrinter,
-        duplex: reprintDuplex,
-        color: reprintColor,
-        copies: reprintCopies,
-        orientation: orientation.value,
-        paperSize: paperSize.value,
-        paperType: paperType.value,
-        printScaling: printScaling.value,
-        numberUp: reprintNumberUp,
-        numberUpLayout: reprintNumberUpLayout,
-        pageBorder: reprintPageBorder
+        printer: payload.printer,
+        duplex: payload.duplex,
+        color: payload.color,
+        copies: payload.copies,
+        orientation: payload.orientation,
+        paperSize: payload.paperSize,
+        paperType: payload.paperType,
+        mediaSource: payload.mediaSource,
+        printScaling: payload.printScaling,
+        pageRange: payload.pageRange,
+        pageSet: payload.pageSet,
+        mirror: payload.mirror,
+        watermarkText: payload.watermarkText,
+        numberUp: payload.numberUp,
+        numberUpLayout: payload.numberUpLayout,
+        pageBorder: payload.pageBorder
       })
     }, () => emit('logout'))
     if (!resp.ok) {

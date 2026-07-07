@@ -214,7 +214,22 @@ SQLite，启用 `WAL` + `foreign_keys`；迁移逻辑在 `internal/store/store.g
 | `status` | TEXT | `queued` / `printed` |
 | `is_duplex` | INTEGER | 是否双面 |
 | `is_color` | INTEGER | 是否彩色 |
+| `copies` | INTEGER | 份数（Issue #68） |
+| `orientation` | TEXT | 页面方向 `portrait` / `landscape`（Issue #68） |
+| `paper_size` | TEXT | 纸张尺寸（Issue #68） |
+| `paper_type` | TEXT | 纸张类型（Issue #68） |
+| `media_source` | TEXT | 进纸盒关键字，`auto` = 自动（Issue #68） |
+| `print_scaling` | TEXT | 缩放策略（Issue #68） |
+| `page_range` | TEXT | 页码范围（Issue #68） |
+| `page_set` | TEXT | 页面子集 `all` / `odd` / `even` / `even-reverse`（Issue #68） |
+| `mirror` | INTEGER | 镜像打印（Issue #68） |
+| `watermark_text` | TEXT | 水印文字（Issue #68） |
+| `number_up` | INTEGER | 一张多页 N-up（Issue #68） |
+| `number_up_layout` | TEXT | N-up 排布顺序（Issue #68） |
+| `page_border` | TEXT | N-up 每小页边框 `single` / `none`（Issue #68） |
 | `created_at` | TEXT | RFC3339 UTC |
+
+> 💡 除 `is_duplex` / `is_color` 外，其余打印参数列均为 [Issue #68](https://github.com/hanxi/cups-web/issues/68) 新增：首次打印时把**完整打印参数**快照落库，`print_records_handlers.go::reprintHandler` 读取后让前端「重新打印」对话框（复用 `PrintOptions` 组件）**精确预填第一次的每一项设置**。老库经 `migrate()` 的 `addColumnIfMissing` 热升级，历史记录这些列取默认值（`A4` / `portrait` / `auto` / `all` 等），重打时退化为合理默认。注意 `page_set` 落库存的是用户原始选择（`even-reverse` 等），不是 even-reverse 重排后被改写的值。
 
 ### `settings`
 

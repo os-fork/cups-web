@@ -63,6 +63,8 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	mediaSource := r.FormValue("media_source")
 	pageRange := r.FormValue("page_range")
 	pageSet := r.FormValue("page_set")
+	// even-reverse 分支下方会改写 pageSet，落库要保留用户的原始选择（Issue #68）。
+	origPageSet := pageSet
 	mirror := r.FormValue("mirror") == "true"
 	watermarkText := strings.TrimSpace(r.FormValue("watermark_text"))
 
@@ -273,7 +275,22 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 				Status:     "queued",
 				IsDuplex:   isDuplex,
 				IsColor:    isColor,
-				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+
+				Copies:         copies,
+				Orientation:    orientation,
+				PaperSize:      paperSize,
+				PaperType:      paperType,
+				MediaSource:    mediaSource,
+				PrintScaling:   printScaling,
+				PageRange:      pageRange,
+				PageSet:        origPageSet,
+				Mirror:         mirror,
+				WatermarkText:  watermarkText,
+				NumberUp:       numberUp,
+				NumberUpLayout: numberUpLayout,
+				PageBorder:     pageBorder,
+
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			}
 			id, err := store.InsertPrintRecord(r.Context(), tx, &rec)
 			if err != nil {

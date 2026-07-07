@@ -68,12 +68,14 @@
       </div>
     </div>
 
-    <UModal v-model:open="showReprintModal">
+    <UModal v-model:open="showReprintModal" :ui="{ content: 'max-w-lg' }">
       <template #content>
-        <div class="p-6 space-y-4">
-          <h3 class="text-lg font-semibold">重新打印</h3>
-          <div class="text-sm text-muted truncate">文件：{{ reprintRecord?.filename }}</div>
-          <div class="space-y-3">
+        <div class="flex flex-col max-h-[85vh]">
+          <div class="p-6 pb-3 border-b border-default shrink-0">
+            <h3 class="text-lg font-semibold">重新打印</h3>
+            <div class="text-sm text-muted truncate mt-1">文件：{{ reprintRecord?.filename }}</div>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6 space-y-4">
             <div>
               <label class="block text-sm font-medium mb-1">打印机</label>
               <USelect
@@ -82,51 +84,28 @@
                 value-key="value"
                 label-key="label"
                 placeholder="选择打印机"
+                class="w-full"
               />
             </div>
-            <div>
-              <label class="block text-sm font-medium mb-1">份数</label>
-              <UInput type="number" v-model.number="reprintForm.copies" :min="1" />
-            </div>
-            <div class="flex gap-4">
-              <label class="flex items-center gap-2 cursor-pointer">
-                <UCheckbox v-model="reprintForm.color" />
-                <span class="text-sm">彩色</span>
-              </label>
-              <label class="flex items-center gap-2 cursor-pointer">
-                <UCheckbox v-model="reprintForm.duplex" />
-                <span class="text-sm">双面</span>
-              </label>
-            </div>
-            <div>
-              <label class="block text-sm font-medium mb-1">每张页数</label>
-              <USelect
-                v-model="reprintForm.numberUp"
-                :items="numberUpItems"
-                value-key="value"
-                label-key="label"
-              />
-            </div>
-            <div v-if="reprintForm.numberUp > 1" class="space-y-3">
-              <div>
-                <label class="block text-sm font-medium mb-1">页面顺序</label>
-                <USelect
-                  v-model="reprintForm.numberUpLayout"
-                  :items="numberUpLayoutItems"
-                  value-key="value"
-                  label-key="label"
-                />
-              </div>
-              <label class="flex items-center gap-2 cursor-pointer">
-                <UCheckbox
-                  :model-value="reprintForm.pageBorder === 'single'"
-                  @update:model-value="reprintForm.pageBorder = $event ? 'single' : 'none'"
-                />
-                <span class="text-sm">为每个小页添加边框</span>
-              </label>
-            </div>
+            <PrintOptions
+              v-model:isColor="reprintForm.isColor"
+              v-model:duplex="reprintForm.duplex"
+              v-model:copies="reprintForm.copies"
+              v-model:paperSize="reprintForm.paperSize"
+              v-model:paperType="reprintForm.paperType"
+              v-model:mediaSource="reprintForm.mediaSource"
+              :media-source-supported="mediaSourceSupported"
+              v-model:printScaling="reprintForm.printScaling"
+              v-model:pageRange="reprintForm.pageRange"
+              v-model:pageSet="reprintForm.pageSet"
+              v-model:mirror="reprintForm.mirror"
+              v-model:watermarkText="reprintForm.watermarkText"
+              v-model:numberUp="reprintForm.numberUp"
+              v-model:numberUpLayout="reprintForm.numberUpLayout"
+              v-model:pageBorder="reprintForm.pageBorder"
+            />
           </div>
-          <div class="flex justify-end gap-2">
+          <div class="flex justify-end gap-2 p-6 pt-3 border-t border-default shrink-0">
             <UButton variant="ghost" @click="showReprintModal = false">取消</UButton>
             <UButton color="primary" :loading="reprintingId != null" @click="submitReprint">确认打印</UButton>
           </div>
@@ -139,12 +118,14 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { formatTime, formatPrinterName, statusColor, statusText } from '../../utils/format'
+import PrintOptions from './PrintOptions.vue'
 
 const props = defineProps({
   records: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   printers: { type: Array, default: () => [] },
-  currentPrinter: { type: String, default: '' }
+  currentPrinter: { type: String, default: '' },
+  mediaSourceSupported: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['refresh', 'reprint'])
@@ -155,31 +136,30 @@ const expandedRecords = ref(new Set())
 const showReprintModal = ref(false)
 const reprintingId = ref(null)
 const reprintRecord = ref(null)
-const reprintForm = ref({
-  printer: '',
-  duplex: false,
-  color: true,
-  copies: 1,
-  numberUp: 1,
-  numberUpLayout: 'lrtb',
-  pageBorder: 'none'
-})
 
-const numberUpItems = [
-  { label: '1 页/张（不缩排）', value: 1 },
-  { label: '2 页/张', value: 2 },
-  { label: '4 页/张', value: 4 },
-  { label: '6 页/张', value: 6 },
-  { label: '9 页/张', value: 9 },
-  { label: '16 页/张', value: 16 }
-]
-
-const numberUpLayoutItems = [
-  { label: '横向 Z 形（左→右，上→下）', value: 'lrtb' },
-  { label: '横向 Z 形（右→左，上→下）', value: 'rltb' },
-  { label: '纵向 N 形（上→下，左→右）', value: 'tblr' },
-  { label: '纵向 N 形（上→下，右→左）', value: 'tbrl' }
-]
+// 重打表单字段与 PrintOptions 组件保持完全一致（duplex 为字符串，isColor 为布尔）；
+// 提交时再折算成后端 reprint 接口需要的 duplex/color 布尔值。
+function defaultReprintForm() {
+  return {
+    printer: '',
+    orientation: 'portrait',
+    isColor: true,
+    duplex: 'one-sided',
+    copies: 1,
+    paperSize: 'A4',
+    paperType: 'plain',
+    mediaSource: 'auto',
+    printScaling: 'fit',
+    pageRange: '',
+    pageSet: 'all',
+    mirror: false,
+    watermarkText: '',
+    numberUp: 1,
+    numberUpLayout: 'lrtb',
+    pageBorder: 'none'
+  }
+}
+const reprintForm = ref(defaultReprintForm())
 
 const printerSelectItems = computed(() =>
   props.printers.map(p => ({ label: `${p.name} — ${p.uri}`, value: p.uri }))
@@ -194,14 +174,25 @@ function toggleRecord(id) {
 
 function openReprintDialog(rec) {
   reprintRecord.value = rec
+  const def = defaultReprintForm()
+  // 用记录里持久化的完整参数精确预填第一次的设置；老记录缺字段则回落默认值（Issue #68）。
   reprintForm.value = {
     printer: props.currentPrinter || rec.printerUri,
-    duplex: rec.isDuplex,
-    color: rec.isColor,
-    copies: 1,
-    numberUp: 1,
-    numberUpLayout: 'lrtb',
-    pageBorder: 'none'
+    orientation: rec.orientation ?? def.orientation,
+    isColor: rec.isColor,
+    duplex: rec.isDuplex ? 'two-sided-long-edge' : 'one-sided',
+    copies: rec.copies ?? def.copies,
+    paperSize: rec.paperSize ?? def.paperSize,
+    paperType: rec.paperType ?? def.paperType,
+    mediaSource: rec.mediaSource ?? def.mediaSource,
+    printScaling: rec.printScaling ?? def.printScaling,
+    pageRange: rec.pageRange ?? def.pageRange,
+    pageSet: rec.pageSet ?? def.pageSet,
+    mirror: rec.mirror ?? def.mirror,
+    watermarkText: rec.watermarkText ?? def.watermarkText,
+    numberUp: rec.numberUp ?? def.numberUp,
+    numberUpLayout: rec.numberUpLayout ?? def.numberUpLayout,
+    pageBorder: rec.pageBorder ?? def.pageBorder
   }
   showReprintModal.value = true
 }
@@ -209,17 +200,27 @@ function openReprintDialog(rec) {
 function submitReprint() {
   const rec = reprintRecord.value
   if (!rec) return
+  const f = reprintForm.value
   reprintingId.value = rec.id
   showReprintModal.value = false
   emit('reprint', {
     id: rec.id,
-    printer: reprintForm.value.printer,
-    duplex: reprintForm.value.duplex,
-    color: reprintForm.value.color,
-    copies: reprintForm.value.copies,
-    numberUp: reprintForm.value.numberUp,
-    numberUpLayout: reprintForm.value.numberUpLayout,
-    pageBorder: reprintForm.value.pageBorder
+    printer: f.printer,
+    duplex: f.duplex !== 'one-sided',
+    color: f.isColor,
+    copies: f.copies,
+    orientation: f.orientation,
+    paperSize: f.paperSize,
+    paperType: f.paperType,
+    mediaSource: f.mediaSource,
+    printScaling: f.printScaling,
+    pageRange: f.pageRange.trim(),
+    pageSet: f.pageSet,
+    mirror: f.mirror,
+    watermarkText: f.watermarkText.trim(),
+    numberUp: f.numberUp,
+    numberUpLayout: f.numberUpLayout,
+    pageBorder: f.pageBorder
   })
 }
 
