@@ -33,6 +33,10 @@ func CrossOriginProtection() func(http.Handler) http.Handler {
 // 到 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: 以避免打断功能；但仍
 // 锁死 object-src、base-uri 与 frame-ancestors，收敛点击劫持、插件注入与 <base>
 // 篡改等向量。若后续前端收敛了 inline 用法，可进一步收紧 script-src。
+//
+// connect-src 必须包含 blob:：PdfCanvas 把转换/标准化后的 PDF 存成 blob: URL 后交给
+// pdf.js 的 getDocument({url}) 渲染预览，pdf.js 内部用 fetch 拉取该 URL，受 connect-src
+// 管控——漏掉 blob: 会导致所有 PDF 预览「加载失败」（图片走 img-src 不受影响，见 Issue #86）。
 func SecurityHeaders(next http.Handler) http.Handler {
 	const csp = "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; " +
@@ -40,7 +44,7 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		"img-src 'self' data: blob:; " +
 		"font-src 'self' data:; " +
 		"worker-src 'self' blob:; " +
-		"connect-src 'self'; " +
+		"connect-src 'self' blob:; " +
 		"object-src 'none'; " +
 		"base-uri 'self'; " +
 		"frame-ancestors 'none'"
