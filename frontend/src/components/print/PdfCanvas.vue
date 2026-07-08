@@ -22,7 +22,9 @@
 <script setup>
 import { ref, onMounted, watch, onUnmounted, nextTick } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// 用包装过的 worker（内联了 Uint8Array base64/hex polyfill），修复旧内核浏览器
+// 在 worker 内调用 toHex 计算 fingerprints 时 `a.toHex is not a function` 导致预览失败（Issue #86）。
+import pdfjsWorker from '../../polyfills/pdf-worker.js?worker&url'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
