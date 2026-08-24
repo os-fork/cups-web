@@ -412,7 +412,7 @@ func TestParsePPDLines_Robustness(t *testing.T) {
 		"onlyonecolumn",             // 只有一列
 		"  leading-space.ppd Desc",  // 前导空格
 		"valid.ppd Valid Printer\r", // CRLF
-		"a  b   c   d",             // 多空格
+		"a  b   c   d",              // 多空格
 	}
 	// 不 panic 就行
 	entries := ParsePPDLines(lines)
@@ -499,8 +499,8 @@ func TestUniquePrinterName(t *testing.T) {
 
 func TestParseDeviceURI(t *testing.T) {
 	tests := []struct {
-		uri      string
-		wantMake string
+		uri       string
+		wantMake  string
 		wantModel string
 	}{
 		{"usb://Canon%20Inc./LBP2900?serial=X", "Canon Inc.", "LBP2900"},
@@ -590,9 +590,9 @@ func TestDriverlessSchemeGate(t *testing.T) {
 
 func TestClassifyPPDSource(t *testing.T) {
 	tests := []struct {
-		name  string
-		desc  string
-		want  PPDSource
+		name string
+		desc string
+		want PPDSource
 	}{
 		{"everywhere", "IPP Everywhere", PPDSourceEverywhere},
 		{"driverless:ipp://x", "IPP Everywhere", PPDSourceEverywhere},

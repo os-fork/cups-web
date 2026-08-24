@@ -134,11 +134,11 @@ func ppdCacheAgeSeconds() int {
 // lpinfoCaps 记录 lpinfo 支持的选项。
 // 本环境无法联网核实 CUPS 各版本的选项差异，所以一律运行时探测。
 type lpinfoCaps struct {
-	DeviceID     bool // --device-id
-	MakeAndModel bool // --make-and-model
-	Language     bool // --language
-	Timeout      bool // --timeout
-	Schemes      bool // --include-schemes / --exclude-schemes
+	DeviceID     bool   // --device-id
+	MakeAndModel bool   // --make-and-model
+	Language     bool   // --language
+	Timeout      bool   // --timeout
+	Schemes      bool   // --include-schemes / --exclude-schemes
 	Raw          string // --help 原文片段，写进 matcher 字段便于排障
 }
 

@@ -289,7 +289,6 @@ func adminUpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-
 func adminCleanupHandler(w http.ResponseWriter, r *http.Request) {
 	count, err := cleanupAllPrints(r.Context(), appStore, uploadDir)
 	if err != nil {

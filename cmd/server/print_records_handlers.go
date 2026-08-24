@@ -235,10 +235,10 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 }
 
 type reprintRequest struct {
-	Printer      string `json:"printer"`
-	Duplex       bool   `json:"duplex"`
-	Color        bool   `json:"color"`
-	Copies       int    `json:"copies"`
+	Printer       string `json:"printer"`
+	Duplex        bool   `json:"duplex"`
+	Color         bool   `json:"color"`
+	Copies        int    `json:"copies"`
 	Orientation   string `json:"orientation"`
 	PaperSize     string `json:"paperSize"`
 	PaperType     string `json:"paperType"`

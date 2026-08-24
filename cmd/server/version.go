@@ -4,8 +4,8 @@ import "net/http"
 
 // Version 是构建时由 -ldflags 注入的版本号。
 // 来源优先级：
-//   1. 构建命令 `go build -ldflags "-X main.Version=<ver>"` 注入（CI / Makefile / Dockerfile 都会注入）
-//   2. 未注入时保持默认值 "dev"，用于本地 `go run` 直接启动的开发场景
+//  1. 构建命令 `go build -ldflags "-X main.Version=<ver>"` 注入（CI / Makefile / Dockerfile 都会注入）
+//  2. 未注入时保持默认值 "dev"，用于本地 `go run` 直接启动的开发场景
 //
 // 值的取值约定：
 //   - tag 构建：`vX.Y.Z`（来自 `git describe --tags --exact-match`）

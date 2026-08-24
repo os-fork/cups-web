@@ -956,7 +956,7 @@ func uniquePrinterNameChecked(base string, existing map[string]string) (string, 
 // driverlessInfo 描述一台打印机的 IPP Everywhere 可用性。
 type driverlessInfo struct {
 	Available bool   `json:"available"`
-	Level     int    `json:"level"`  // 0=不可用 1=scheme+CUPS 2=IPP 属性确认
+	Level     int    `json:"level"` // 0=不可用 1=scheme+CUPS 2=IPP 属性确认
 	Reason    string `json:"reason"`
 	Evidence  string `json:"evidence,omitempty"`
 }
