@@ -31,11 +31,22 @@ type DriverStatus struct {
 	// HasScript 表示镜像里确实存在 install-<name>.sh；镜像瘦身或裁剪脚本时
 	// 注册表可能领先于实际脚本，提前暴露出来比让 driver-install 报错更友好。
 	HasScript bool `json:"hasScript"`
+	// RestoreMode 取自 metadata.txt 的 restore_mode=，取值 package / files / hybrid。
+	// 它决定容器重启后驱动能否被**完整**恢复：厂商 deb 普遍把产物装在 /opt、/usr/bin、
+	// /usr/share/<vendor> 等文件级路径白名单之外的位置，只有归档 .deb 原件
+	// （package / hybrid）才能完整装回来。
+	// 老快照（v1，没跑过新版 driver-install）没有这个键，此时为空串 —— 前端据此提示
+	// 用户"重装一次以启用包级恢复"。
+	RestoreMode string `json:"restoreMode,omitempty"`
+	// PackageCount 取自 metadata.txt 的 package_count=：本驱动归档了几个 .deb。
+	PackageCount int `json:"packageCount,omitempty"`
+	// ManifestVersion 取自 metadata.txt 的 manifest_version=（v2 起才写）。
+	ManifestVersion int `json:"manifestVersion,omitempty"`
 }
 
 // CustomDebPackage 描述一个通过 /api/admin/drivers/upload 上传的 .deb 包。
-// 它只做「记录」用途：.deb 的 maintainer script 副作用无法用 manifest 文件级
-// 恢复（见 restore-drivers.sh 的按行 cp -a 逻辑），因此容器重启后需要手动重装。
+// 归档在 custom-deb/packages/ 下，容器启动时由 restore-drivers 用 dpkg -i 自动重装
+// （幂等：已装且版本不更旧就跳过）。
 type CustomDebPackage struct {
 	Filename    string `json:"filename"`
 	InstalledAt string `json:"installedAt,omitempty"`

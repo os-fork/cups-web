@@ -83,7 +83,7 @@ cups-web/
 ├── ofd-converter/                 # Java OFD → PDF
 ├── scripts/
 │   ├── build/install-cups.sh      # 源码编译 CUPS
-│   └── driver/                    # 驱动管理命令 + 安装脚本
+│   └── driver/                    # 驱动管理命令 + 安装脚本 + capture-debs.sh（apt 钩子）
 ├── docker-fonts/                  # 构建期字体与 gs/fontconfig 配置
 ├── entrypoint.sh                  # AIO 容器启动脚本
 ├── Dockerfile                     # 五阶段构建
@@ -257,13 +257,32 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 | --- | --- |
 | `/opt/cups-drivers/scripts/install-<name>.sh` | 安装脚本（构建期 COPY，不执行） |
 | `/usr/local/bin/{driver-install,driver-list,driver-remove,restore-drivers}` | 管理命令 |
-| `/opt/cups-drivers/data/<driver>/manifest.txt` | 文件清单 = **"已安装"唯一标记** |
-| `/opt/cups-drivers/data/<driver>/metadata.txt` | `driver=` / `installed_at=` / `file_count=` / `arch=` |
-| `/opt/cups-drivers/data/<driver>/<绝对路径镜像>` | 产物副本 |
+| `/opt/cups-drivers/libexec/capture-debs` | apt `DPkg::Pre-Install-Pkgs` 钩子（归档 apt 要装的 `.deb`） |
+| `/opt/cups-drivers/baseline-packages.txt` | **构建期**生成的镜像自带包名快照（镜像层，**不在挂载卷内**） |
+| `/opt/cups-drivers/data/<driver>/manifest.txt` | 文件清单 = **"已安装"唯一标记**（纯路径列表，包级模式下可能为空文件） |
+| `/opt/cups-drivers/data/<driver>/packages.txt` | 存在即包级/混合模式。`<pkg> <version> <arch> <相对路径>` |
+| `/opt/cups-drivers/data/<driver>/packages/*.deb` | 归档的 `.deb` 原件 |
+| `/opt/cups-drivers/data/<driver>/metadata.txt` | `driver=` / `installed_at=` / `file_count=` / `arch=` / `manifest_version=` / `restore_mode=` / `package_count=` / `package_bytes=` |
+| `/opt/cups-drivers/data/<driver>/<绝对路径镜像>` | 文件级产物副本 |
 | `/opt/cups-drivers/data/custom-ppd/` | 上传 `.ppd`（写 manifest，可恢复） |
-| `/opt/cups-drivers/data/custom-deb/packages/` | 上传 `.deb`（**不写 manifest**，重启后需手动重装） |
+| `/opt/cups-drivers/data/custom-deb/packages/` | 上传 `.deb`（写 `packages.txt`，**重启自动重装**） |
 
 `docker-compose.yml` 把 `./.drivers` 挂到 `/opt/cups-drivers/data`。**不挂卷 = 重启丢驱动。**
+
+### 两条持久化通道（按驱动来源分流）
+
+| 通道 | 适用 | 恢复 | 卸载 |
+| --- | --- | --- | --- |
+| **包级** | dpkg 包来源（`escpr2`(deb) / `canon-ufr2` / `konica-bizhub` / `epson-cn` / `gutenprint` / `custom-deb`） | `dpkg -i` 归档的 `.deb` | `apt-get purge`（dry-run 校验后）或 `dpkg -P --force-depends` |
+| **文件级** | 非包来源（`canon-capt` / `hp-laserjet1020` / `sharp` / `foo2zjs-firmware` / `custom-ppd` / `escpr2`(源码分支)） | 按 manifest `cp -aT` | 按 manifest `rm -f` |
+
+**为什么必须分流**：厂商 deb 普遍把产物装在 `/opt/<vendor>/`（Epson escpr2 的 298 个文件全在 `/opt`、Konica 的 filter 真身在 `/opt/km`）、`/usr/bin`（Canon UFR II 的渲染引擎 `cnrsdrvufr2`）、`/usr/share/<vendor>/`（gutenprint 的 370 个机型 XML、Canon 的 356 个 ICC），这些全在文件级路径白名单之外 —— 只靠文件级快照会得到空 manifest（`exit 1`，但文件其实已进容器）或残缺快照（UI 显示"已安装"而重启后驱动失效）。
+
+`.deb` 原件的捕获有四层，前面命中就不用后面：apt 钩子（`capture-debs`，含全部传递依赖）→ 厂商脚本用 `DRIVER_PKG_DIR` 主动交接 → `/var/cache/apt/archives/` 打捞 → `apt-get download`。
+
+> 🚫 `capture-debs` **必须永远 `exit 0`** —— `DPkg::Pre-Install-Pkgs` 返回非零会让 apt 中止**整个安装事务**。
+>
+> 🚫 厂商脚本的交接行必须 `|| true` 且不新增 `trap`，以免破坏"退出码 0/3/其他"和"只允许一个 EXIT trap"两条约定。
 
 ### 退出码约定
 
@@ -273,7 +292,7 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 | `3` | 架构不支持 | 不写 manifest，`exit 3` |
 | 其他非零 | 真失败 | 不写 manifest，透传 |
 
-**退出码 0 但无新文件也判失败**（拒绝写 manifest）。
+**退出码 0 但文件与包归档同时为空才判失败**（拒绝写 manifest）。只要归档到了 `.deb`，即使所有文件都落在白名单外也算成功 —— 那种驱动照样能完整恢复。
 
 ### 架构探测
 
@@ -287,6 +306,20 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 
 > ⚠️ **白名单在 `driver-install.sh` / `driver-remove.sh` / `restore-drivers.sh` 三处各有一份，必须永久保留全部三份**——remove/restore 侧是给存量被污染快照兜底的。🚫 不要因为 install 侧已过滤就删掉另外两处。详见 [docs/driver-management.md](docs/driver-management.md#-manifest-白名单为什么必须存在且三处都要有)。
 
+### baseline 归属守卫（路径白名单的结构性补丁）
+
+路径白名单有个**按路径分不开**的盲区：multiarch 目录（`/usr/lib/<triplet>`）既是驱动共享库的家、也是系统库的家。厂商 deb 的依赖被 apt 解析时会把无关系统库拖进来（老 `install-epson-cn.sh` 的 `apt-get -f install` 会拉进整套 Qt5/X11/GL —— 那只是 GUI 工具的依赖），它们正好落在白名单**内** → 被当成驱动产物写进 manifest → `driver-remove` 逐条 `rm` 就把系统库删了，`restore-drivers` 每次开机还用旧副本覆盖回去。
+
+按**包属主**就分得干干净净：构建期把当时已安装的全部包名存进 `baseline-packages.txt`，三个脚本据此把"镜像自带包拥有的文件"一律排除（install 侧不记录，remove 侧不删，restore 侧不覆盖）。
+
+实现要点：包名读进 bash 关联数组做 O(1) 判断（避免对两千多个 `.list` 文件各 fork 一次 grep）→ 只 `cat` baseline 包自己的 `/var/lib/dpkg/info/*.list`（multiarch 包的清单名是 `<pkg>:<arch>.list`，比对前要去掉 `:arch`）→ 与 manifest 求一次 `comm -12` 交集，之后逐条查是 O(1)。
+
+> ⚠️ 这份守卫同样**三处各有一份**，理由与三份路径白名单相同。
+>
+> ⚠️ `baseline-packages.txt` 必须留在**镜像层**且生成于**所有 apt 安装之后**。放进 `/opt/cups-drivers/data` 会被 volume 挂载覆盖，守卫就降级成"只做路径白名单"。
+>
+> 🚫 **CUPS 自身的包绝不能进驱动快照**（`driver-install.sh` 的 `PKG_NAME_DENY_PATTERNS` 里列了 `cups` / `cups-core-drivers` / `cups-ppdc` / `libcups*` 等）。本镜像的 CUPS 是源码编译的（2.4.19，overlay tar 解包进 `/usr`），apt 侧只装了 `cups-daemon` / `cups-client` / `cups-filters`，**故意没有 `cups` 元包**。某些驱动包（`printer-driver-gutenprint`、Konica 的 deb）硬依赖 `cups` 元包，一旦让 apt 去满足就会装上 Debian 的 `cups-core-drivers` —— 那里面正是 `/usr/lib/cups/backend/{usb,socket,lpd,...}` 和一批 filter，**直接覆盖源码编译的同名文件**。实测 Konica 那条路径会让 564 个 CUPS 自身的文件被算进驱动快照。各 `install-*.sh` 用 `dpkg -i --force-depends` 从根上避免，DENY 再兜一层。
+
 ### AIO 编译脚本约定
 
 > ⚠️ 编译型脚本**只允许一个 `trap _cleanup EXIT`**（bash 同信号只保留最后注册的 handler）。AIO 模式下只 `apt-get clean`，**绝不 `rm -rf /var/lib/apt/lists/*`**。详见 [docs/driver-management.md](docs/driver-management.md#-aio-编译脚本的单一-exit-trap约定)。
@@ -294,7 +327,9 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 ### 上传自定义驱动
 
 - **`.ppd`**：校验 → 装到 `/usr/share/cups/model/custom/` → 写 manifest（可恢复）
-- **`.deb`**：`dpkg -i`（失败补依赖后**必须再 `dpkg -i` 一次**）→ 归档到 `custom-deb/packages/`，**不写 manifest**（重启后需手动重装）
+- **`.deb`**：`dpkg -i`（失败补依赖后**必须再 `dpkg -i` 一次**）→ 归档到 `custom-deb/packages/` **并登记 `packages.txt`** → 容器启动时由 `restore-drivers` 幂等 `dpkg -i` 自动重装。仍**不写 manifest**（文件级恢复对 `.deb` 无意义，真正的安装动作在 maintainer script 里）
+  - 存量只归档未登记的 `.deb` 会被 restore 按 glob **自动收养**，无需用户操作
+  - 装不上的坏包会每次开机重试 → 出口是删掉宿主 `./.drivers/custom-deb/packages/` 下的对应文件
 - 🔐 上传 `.deb` = 容器内 root RCE（dpkg maintainer script）。接口受三重鉴权保护，**管理员密码等同容器 root 凭据**
 - 大小上限必须用 `http.MaxBytesReader`（`ParseMultipartForm(n)` 的 `n` 是 maxMemory 不是 body 上限）
 
@@ -315,20 +350,24 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 
 ## 🚀 容器启动流程（`entrypoint.sh`）
 
-1. `restore-drivers`（恢复驱动快照）
+1. `restore-drivers`（恢复驱动快照：先包级 `dpkg -i` 归档的 `.deb`，再文件级 `cp -a`）
 2. CUPS 管理员用户 + tzdata
-3. CUPS 配置还原（空卷时从 `/etc/cups-bak/` 复制）
+3. CUPS 配置还原（空卷时从 `/etc/cups-bak/` 复制）+ **对存量卷幂等补** `ssl/` 目录与 `ReadyPaperSizes`
 4. HP 1020 PPD Letter → A4 修补（issue #48）
 5. HP host-based 固件上传（后台）
 6. dbus + avahi + ipp-usb（后台，允许失败）
 7. cupsd + watchdog
 8. 等 cupsd 就绪（`lpstat -r`，30 × 1s）
-9. AirPrint A4 `media-ready` 修补（issue #82，后台）
+9. HP 1020 队列 `media-default=A4`（后台）
 10. `exec /cups-web`（PID 1）
 
 > ⚠️ cupsd 必须在 watchdog 子 shell **内部前台**启动（`wait` 只能等自己的子进程，否则 127 重启风暴）。🚫 不要把 `cupsd -f` 挪到子 shell 外面。
 >
-> ⚠️ `restore-drivers` 必须永远 `exit 0`（驱动恢复是尽力而为，不能阻塞启动，否则用户连 Web UI 都进不去无法自救）。
+> ⚠️ `restore-drivers` 必须永远 `exit 0`（驱动恢复是尽力而为，不能阻塞启动，否则用户连 Web UI 都进不去无法自救）。它现在会跑 `dpkg -i`，因此必须 `DEBIAN_FRONTEND=noninteractive` + `--force-confold` + `timeout` + 临时 `policy-rc.d`（详见 docs）。
+>
+> ⚠️ **第 3 步的两条补丁必须在 `if [ ! -f cupsd.conf ]` 之外**：那个 if 只看 `cupsd.conf` 一个文件，存量 `./.etc` 卷里只要有它，整块还原就被跳过，新基线里加的东西存量用户永远拿不到。
+>
+> 🚫 **`lpadmin -o media=` 设的是 `media-default`，不是 `media-ready`。** iPhone AirPrint 面板的纸张**列表**读 `media-ready`，而 CUPS 的 `media-ready` 只由 cupsd.conf 的 `ReadyPaperSizes` ∩ PPD 尺寸决定（`scheduler/printers.c` 里 `load_ppd` 是唯一写入点），跟 `media-default` 无关。第 9 步只负责"面板默认勾选 A4"，issue #82 的真正修法是 `ReadyPaperSizes A4,A3,A5,A6,EnvDL`（值用 **PPD 尺寸名**，不是 PWG 名 `iso_a4_210x297mm`）。不配它时 cupsd 按 locale 兜底成 `Letter,Legal,Tabloid,4x6,Env10`（容器无 `LANG` → locale 为 C → 走 Letter 分支），A4 永远不出现。
 >
 > 完整设计理由见 [docs/container-startup.md](docs/container-startup.md)。
 
@@ -383,6 +422,10 @@ make docker-build   # AIO 镜像
 五阶段：`frontend-build`（node:20-slim）→ `java-builder`（BUILDPLATFORM 锁 amd64）→ `builder`（golang:1.26）→ `cups-builder`（源码编译 CUPS）→ `runtime`（trixie-slim）。覆盖 `linux/amd64` + `arm64` + `arm/v7`。
 
 > 🚨 `cups-builder` 的 `ca-certificates` 请勿删除（wget TLS 校验，删了 CI 直接崩）。
+>
+> ⚠️ **`/etc/cups/*` 来自 apt 的 `cups-daemon`（trixie 2.4.10），不是源码编译那份。** `cups-builder` 打的 `cups-compiled.tar` 只含 `/usr` 路径，整个 `/etc` 都不在里面。所以：读 `cupsd.conf` 的 Location/Policy 出厂内容要按 **Debian 版**理解；而 `/usr/lib/cups/**`（filter、backend、`daemon/cups-driverd`）是**源码编译的 2.4.19**。这也是为什么绝不能让 apt 装 `cups-core-drivers` —— 它会用 Debian 版覆盖 overlay 解包的那批文件。
+>
+> ⚠️ `cupsd` **不会自己创建** `/etc/cups/ssl`（源码里那处 `cupsdCheckPermissions` 的 `create_dir` 传的是 0，`lstat` 失败时既不 mkdir 也不报错），缺了它要到第一次 ipps 握手才炸 `Unable to create server credentials`，而 AirPrint 客户端优先挑 `_ipps._tcp`。以前它之所以存在纯粹是因为 Debian 的 `cups-daemon` 把它作为 package-owned 空目录发布 —— 那是别人的实现细节，现在 Dockerfile 与 entrypoint 各显式建一次。
 >
 > 五阶段设计理由、三架构镜像选型史、HOME/LibreOffice profile 见 [docs/docker-build.md](docs/docker-build.md)。
 

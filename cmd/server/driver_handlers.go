@@ -263,11 +263,20 @@ func adminListDriversHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// metadata.txt 由 scripts/driver/driver-install.sh 写入，
 		// 键名是 driver= / installed_at= / file_count= / arch=（历史代码读的 date= 永远不命中）。
+		// v2 起还有 manifest_version= / restore_mode= / package_count= / package_bytes=。
 		meta := readKeyValueFile(filepath.Join(driversDataDir, d.Name, "metadata.txt"))
 		if v := meta["installed_at"]; v != "" {
 			status.InstalledAt = v
 		}
 		status.InstalledArch = meta["arch"]
+		status.RestoreMode = meta["restore_mode"]
+		// 解析失败一律留 0（omitempty 会把字段省掉），不因为一行坏数据让整个列表 500。
+		if n, err := strconv.Atoi(meta["package_count"]); err == nil {
+			status.PackageCount = n
+		}
+		if n, err := strconv.Atoi(meta["manifest_version"]); err == nil {
+			status.ManifestVersion = n
+		}
 		drivers = append(drivers, status)
 	}
 
@@ -275,9 +284,10 @@ func adminListDriversHandler(w http.ResponseWriter, r *http.Request) {
 		"currentArch": arch,
 		"drivers":     drivers,
 		"customDebs":  listCustomDebs(),
-		// 明确告知前端：.deb 的安装副作用（maintainer script）无法用文件清单恢复，
-		// 容器重启后必须手动重新上传，绝不能静默丢失。
-		"customDebNotice": "上传的 .deb 包不会随容器重启自动恢复，重启后需要重新上传安装。",
+		// 上传的 .deb 现在会被归档到 custom-deb/packages/ 并在容器启动时由
+		// restore-drivers 用 `dpkg -i` 自动重装（幂等），不再需要用户手动重新上传。
+		"customDebNotice": "上传的 .deb 包已归档，容器重启时会自动重新安装；" +
+			"若某个包始终装不上，可在宿主的 ./.drivers/custom-deb/packages/ 下删除它。",
 	})
 }
 
@@ -1105,9 +1115,9 @@ func adminUploadDriverHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		invalidatePPDModels()
 
-		// 归档原件，至少让用户在列表里看得到"装过什么"；
-		// 归档失败不影响本次安装成功，只是重启后无从追溯，故降级为警告。
-		warning := "该 .deb 不会随容器重启自动恢复，重启后需要重新上传安装。"
+		// 归档原件 + 登记 packages.txt，容器启动时由 restore-drivers 幂等 dpkg -i 装回来。
+		// 归档失败不影响本次安装成功（文件已经装进容器了），只是重启后恢复不了，降级为警告。
+		warning := ""
 		if err := persistUploadedDeb(filename, tmpPath, username); err != nil {
 			log.Printf("[driver-upload] deb %s 归档失败 (user=%s): %v", filename, username, err)
 			warning = "该 .deb 安装成功但归档失败，容器重启后需要重新上传安装（且列表中不会显示该包）。"
@@ -1221,12 +1231,16 @@ func installDebPackage(ctx context.Context, debPath string) (string, error) {
 	return logBuf.String(), nil
 }
 
-// persistUploadedDeb 把上传的 .deb 原件归档到 {driversDataDir}/custom-deb/packages/。
+// persistUploadedDeb 把上传的 .deb 原件归档到 {driversDataDir}/custom-deb/packages/，
+// 并登记到 packages.txt，让 restore-drivers 在容器启动时用 `dpkg -i` 自动重装。
 //
-// 为什么故意不写 manifest.txt：restore-drivers.sh 是按 manifest 里的绝对路径
-// 逐文件 cp -a 回文件系统的，对 .deb 毫无意义（真正的安装动作在 maintainer script 里，
-// 复制一个 .deb 文件到某处不会让驱动生效），写了反而会把 .deb 拷到奇怪的位置。
-// 因此这里只做归档 + 元数据记录，由 /api/admin/drivers 列出来提示用户手动重装。
+// 仍然**不写 manifest.txt**：那是文件级恢复用的（按绝对路径逐条 cp -a），对 .deb 毫无
+// 意义——真正的安装动作在 maintainer script 里，把 .deb 拷到某个路径不会让驱动生效。
+// 包级恢复才是 .deb 的正确归宿：restore-drivers 读 packages.txt（或直接 glob
+// packages/*.deb 收养历史遗留的归档）→ dpkg -i，postinst 会照常执行。
+//
+// 这也修掉了一个长期的坑：以前这里只归档不登记，用户上传的 .deb 每次容器重启都得手动
+// 重新上传一遍。
 func persistUploadedDeb(filename, tmpPath, username string) error {
 	baseDir := filepath.Join(driversDataDir, customDebDirName)
 	pkgDir := filepath.Join(baseDir, "packages")
@@ -1253,12 +1267,75 @@ func persistUploadedDeb(filename, tmpPath, username string) error {
 		return err
 	}
 
-	meta := fmt.Sprintf("driver=%s\ninstalled_at=%s\narch=%s\nuploaded_by=%s\nlast_package=%s\n",
+	// 登记到 packages.txt，供 restore-drivers 的包级恢复使用。
+	// 格式与 driver-install.sh 写的一致：<pkg> <version> <arch> <相对路径>。
+	// 包名/版本/架构从 .deb 控制信息里取；取不到就退回用文件名当包名 —— restore 侧
+	// 对拿不到版本的条目只做"文件存在就装"，不会因此漏装。
+	pkgName, pkgVer, pkgArch := debControlFields(destPath)
+	if pkgName == "" {
+		pkgName = strings.TrimSuffix(filename, ".deb")
+	}
+	if err := appendCustomDebEntry(baseDir, pkgName, pkgVer, pkgArch, filename); err != nil {
+		// 归档已经成功，登记失败只影响"自动重装"，不该让整个上传报错回滚。
+		log.Printf("[drivers] WARNING: 登记 custom-deb packages.txt 失败（重启后需手动重装 %s）: %v", filename, err)
+	}
+
+	meta := fmt.Sprintf("driver=%s\ninstalled_at=%s\narch=%s\nuploaded_by=%s\nlast_package=%s\nrestore_mode=package\nmanifest_version=2\n",
 		customDebDirName, time.Now().Format(time.RFC3339), currentDebArch(), username, filename)
 	if err := os.WriteFile(filepath.Join(baseDir, "metadata.txt"), []byte(meta), 0o644); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	return nil
+}
+
+// debControlFields 用 dpkg-deb -f 读出 .deb 的包名/版本/架构。
+// 任何一步失败都返回空串，由调用方决定退路（绝不让上传流程因此失败）。
+func debControlFields(debPath string) (name, version, arch string) {
+	out, err := exec.Command("dpkg-deb", "-f", debPath, "Package", "Version", "Architecture").Output()
+	if err != nil {
+		return "", "", ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch strings.TrimSpace(key) {
+		case "Package":
+			name = val
+		case "Version":
+			version = val
+		case "Architecture":
+			arch = val
+		}
+	}
+	return name, version, arch
+}
+
+// appendCustomDebEntry 把一条记录写进 custom-deb/packages.txt，按包名去重
+// （同一个包重复上传新版本时替换旧行，避免 restore 时同名包出现两条）。
+func appendCustomDebEntry(baseDir, pkgName, pkgVer, pkgArch, filename string) error {
+	listPath := filepath.Join(baseDir, "packages.txt")
+
+	var kept []string
+	if data, err := os.ReadFile(listPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if fields := strings.Fields(line); len(fields) > 0 && fields[0] == pkgName {
+				continue // 旧版本条目，丢掉
+			}
+			kept = append(kept, line)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	kept = append(kept, strings.Join([]string{pkgName, pkgVer, pkgArch, filename}, " "))
+	return os.WriteFile(listPath, []byte(strings.Join(kept, "\n")+"\n"), 0o644)
 }
 
 // ── Helper functions ──────────────────────────────────────────────────────────

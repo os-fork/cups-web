@@ -101,13 +101,32 @@ fi
 
 echo "[konica-bizhub] installing ${DEB_PATH}"
 
-# dpkg -i 失败时用 apt-get -f install 兜底处理依赖（与 install-epson-cn.sh 同模式）。
-# ⚠️ 必须先 apt-get update：apt 需要包索引才能下载缺失依赖，AIO 运行时的镜像里
-# /var/lib/apt/lists 可能是空的（构建期为省体积清过）。
-if ! dpkg -i "${DEB_PATH}"; then
-    echo "[konica-bizhub] dpkg reported dependency issues, fixing with apt-get -f install"
-    apt-get update
-    apt-get install -y -f --no-install-recommends
+# ── 把 .deb 原件交给 driver-install 归档（包级持久化）────────────────────
+# 本脚本的临时目录会被 EXIT trap 删掉，不交接的话重启后无从重装。而这个驱动的
+# **filter 真身**（/opt/km/bizhub3000mf/bin/cupswrapper/lpdwrapper）、rawtobr3、
+# brprintconflsr3 全在 /opt/km 下，加上 postinst 现建的符号链接
+# /usr/lib/cups/filter/km_BIZHUB3000MF —— 文件级快照一个都抓不到（/opt 不在白名单，
+# 符号链接又不在 dpkg -L 输出里），只有归档 .deb 才能完整恢复。
+# 故意用 `|| true`：归档失败绝不影响安装成败判定与退出码语义（0/3/其他）。
+if [ -n "${DRIVER_PKG_DIR:-}" ]; then
+    cp -a "${DEB_PATH}" "${DRIVER_PKG_DIR}/" 2>/dev/null || true
+fi
+
+# ⚠️ 这里**故意不用 `apt-get -f install` 兜底**（老实现用过，会污染 CUPS）：
+# 这个 deb 声明 `Depends: cups | cupsd`，而本镜像的 CUPS 是**源码编译**的
+# （install-cups.sh 装进 /usr，再由 Dockerfile 的 overlay tar 解包），apt 侧只装了
+# cups-daemon / cups-client / cups-filters，故意没有 `cups` 元包。
+# 一旦让 apt 去满足这个依赖，它就会连带装上 Debian 的 `cups-core-drivers`
+# （还有 cups-ppdc / cups-server-common / cups 元包），而 cups-core-drivers 提供的
+# 正是 /usr/lib/cups/backend/{usb,socket,lpd,dnssd,snmp,mdns} 与一批 filter ——
+# **直接覆盖源码编译的同名文件**，让 2.4.19 与 Debian 2.4.10 的组件混用。
+# 实测这会让 564 个 CUPS 自身的文件被算进本驱动的快照，卸载驱动时把它们一起删掉。
+#
+# 这个 deb 真正需要的运行期依赖都已在镜像里，`cups` 只是个空壳元包，
+# 用 --force-depends 跳过即可（与 install-canon-ufr2.sh / install-epson-cn.sh 同一思路）。
+if ! dpkg -i --force-depends "${DEB_PATH}"; then
+    echo "[konica-bizhub] ERROR: dpkg -i --force-depends failed"
+    exit 1
 fi
 
 echo "[konica-bizhub] installed Konica Minolta bizhub 3000MF driver v${KM_VERSION} (${KM_DEB_ARCH})"

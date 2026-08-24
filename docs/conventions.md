@@ -40,10 +40,26 @@
 1. **写安装脚本**：`scripts/driver/install-<name>.sh`。文件名里的 `<name>` 就是驱动的 canonical name，`Dockerfile` 的 `COPY scripts/driver/install-*.sh /opt/cups-drivers/scripts/` 会自动带上，无需改 Dockerfile。
 2. **遵守退出码约定**：`0` = 成功；**`3` = 当前架构不支持**（绝不能用 `exit 0` 糊过去，否则会写出 manifest、Web UI 假显示"已安装"）；其他非零 = 真失败。架构判断一律用 `dpkg --print-architecture`（**不要用 `dpkg-architecture`**，runtime 镜像没有 `dpkg-dev`）。
 3. **遵守单一 EXIT trap 约定**（只有需要现场编译 / 装编译依赖时才涉及）：整个脚本**只允许一个** `trap _cleanup EXIT`，临时目录清理和 `apt-get purge -y --auto-remove ${BUILD_DEPS}` 都写进 `_cleanup()` 的分支里；用 `CUPS_AIO` 环境变量（`driver-install` 会 `export CUPS_AIO=1`，Go 侧 `runDriverCommand` 也在 `cmd.Env` 里加了）区分"运行时容器内安装"与"构建期安装"。**AIO 模式下不要 `rm -rf /var/lib/apt/lists/*`**，否则装下一个驱动就没有 apt 索引了。
-4. **产物必须落在白名单目录内**：`/usr/lib/cups`、`/usr/share/cups`、`/usr/share/ppd`、`/usr/share/foomatic`、`/lib/firmware`、`/usr/lib/firmware`、`/usr/lib/<multiarch>`。落在别处的文件不会进 manifest，重启后不会被恢复；一个新文件都没落进来时 `driver-install` 会直接判失败。
+4. **选对持久化通道**：
+   - **deb 来源的驱动**（厂商 `.deb`、或 `apt-get install`）走**包级通道**：在下载成功之后、`dpkg -i` 之前加一行把 `.deb` 原件交接给 `driver-install` 归档 ——
+     ```bash
+     # 故意 `|| true`：归档失败不影响安装成败判定，也不改变退出码语义（0/3/其他）；
+     # 变量未设置时（构建期或手工执行）行为与以前完全一致。绝不新增 trap。
+     if [ -n "${DRIVER_PKG_DIR:-}" ]; then
+         cp -a "${DEB_PATH}" "${DRIVER_PKG_DIR}/" 2>/dev/null || true
+     fi
+     ```
+     `apt-get install` 来源的不用手动交接（apt 钩子 `capture-debs` 会自动抓，含全部传递依赖），但**要避免让 apt 去满足 `cups` 元包依赖** —— 用 `dpkg -i --force-depends` 而不是 `apt-get -f install`，否则会装上 Debian 的 `cups-core-drivers` 覆盖源码编译的 CUPS 组件。
+   - **非 deb 来源**（源码编译、手工 cp、unzip）走**文件级通道**：产物必须落在白名单目录内（`/usr/lib/cups`、`/usr/share/cups`、`/usr/share/ppd`、`/usr/share/foomatic`、`/lib/firmware`、`/usr/lib/firmware`、`/usr/lib/<multiarch>`）。⚠️ 用 autoconf 时注意 `--libdir` 默认是**裸 `/usr/lib`**（不在白名单内），共享库要显式装到 multiarch 目录。
+   - 文件级列表与包级归档**同时**为空时 `driver-install` 才判失败。
 5. **注册到 `driver_registry.go::driversRegistry`**：填 `Name`（= 脚本名里的 `<name>`）、`DisplayName`、`Description`、`Arch`（`{"all"}` 或 Debian 架构名列表，决定前端「安装」按钮是否可点）、`NeedCompile`（是否现场编译，前端据此提示耗时）、`MatchPatterns`（`(?i)` 正则，供 `/drivers/detect` 按型号推荐；纯通用驱动可留空）。
 6. **下载源**：第三方驱动一律走本仓库自维护的 GitHub Releases 镜像（tag 固定为 `cups-driver`），不要直连厂商 CDN（Epson/Sharp 的官方下载站有 UA/TLS 指纹风控，CI 里 403 概率高）。失败要 fail-fast（非零退出），不要静默成功。
-7. **验证**：容器内 `driver-list` 看是否出现在可用列表、`driver-install <name>` 跑通、`cat /opt/cups-drivers/data/<name>/manifest.txt` 检查清单里**没有**系统文件、`driver-remove <name>` 后系统仍然完好、重启容器确认 `restore-drivers` 能恢复。
+7. **验证**：容器内 `driver-list` 看是否出现在可用列表（会显示 `Restore: package/files/hybrid`）、`driver-install <name>` 跑通、`cat /opt/cups-drivers/data/<name>/manifest.txt` 检查清单里**没有**系统文件（尤其没有 CUPS 自己的 backend/filter）、`driver-remove <name>` 后系统仍然完好（`lpstat -r` 正常、`/usr/lib/cups/backend/*` 还在）。
+8. **恢复验证必须销毁重建容器**：
+   ```bash
+   docker rm -f <ct> && docker run -d --name <ct> -v "$PWD/.drivers:/opt/cups-drivers/data" <image>
+   ```
+   🚫 **不能用 `docker restart`** —— 它保留容器可写层，驱动文件本来就还在，测不出任何东西，会假通过。重建后逐项确认关键产物（filter、共享库、PPD、厂商数据目录）都回来了，`ldd` 无 `not found`。
 
 ## 调试与测试
 

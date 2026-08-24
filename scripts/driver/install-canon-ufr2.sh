@@ -107,6 +107,17 @@ fi
 
 echo "[canon-ufr2] installing ${DEB_PATH}"
 
+# ── 把 .deb 原件交给 driver-install 归档（包级持久化）────────────────────
+# 本脚本的临时构建目录会被 EXIT trap 删掉，不交接的话重启后无从重装。而 Canon 的
+# 产物大量落在 /usr/bin（渲染引擎 cnrsdrvufr2 / cnpdfdrv）、裸 /usr/lib（9 个闭源
+# .so）、/usr/share/caepcm（356 个 ICC）、/usr/share/ufr2filterr（半色调表）——
+# 这些全在文件级路径白名单之外，只有归档 .deb 才能在容器重启后完整恢复。
+# 故意用 `|| true`：归档失败绝不影响本次安装的成败判定，也绝不改变本脚本的退出码
+# 语义（0/3/其他）。DRIVER_PKG_DIR 未设置时（构建期或手工执行）行为与以前完全一致。
+if [ -n "${DRIVER_PKG_DIR:-}" ]; then
+    cp -a "${DEB_PATH}" "${DRIVER_PKG_DIR}/" 2>/dev/null || true
+fi
+
 # Canon deb 声明依赖 cups-bsd（Debian trixie 已移除，功能合并到 cups-client）
 # 和 libgtk-3-0/libgtk-3-0t64（状态监控 GUI 依赖，无头容器不需要）。
 # 这两个依赖对核心 filter（rastertoufr2）的运行毫无影响，filter 实际

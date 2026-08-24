@@ -6,6 +6,14 @@ services:
     container_name: cups
     # 必须 root：容器内要跑 cupsd、lpadmin、dpkg（驱动安装），
     # 还要往 /usr/lib/cups、/usr/share/ppd 等系统路径写驱动文件。
+    #
+    # ⚠️ 还有一条容易忽略的理由：**USB 打印机能不能用取决于这一行**。
+    # CUPS 把 usb backend 归为 RBACKENDS 并装成 0744，cupsd 据此（检测到
+    # 无 group/other 写执行位、且自身 uid 为 0）以 **root** 运行它。
+    # 一旦改成非 root（k8s runAsUser、docker run -u），cupsd 的 RunUser != 0
+    # 会让 backend 降权运行，此时宿主 udev 给 USB 打印机设的 root:lp 0660
+    # 与容器内 lp 的 gid 是否一致就变成决定性因素——不一致就会表现为
+    # 队列永久停在 "Waiting for printer to become available"。
     user: root
     # 解除 AppArmor 限制（issue #91）：
     # 防止在 PVE (Proxmox VE) LXC 或部分 Linux 系统中出现

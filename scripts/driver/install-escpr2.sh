@@ -92,6 +92,17 @@ if [ -n "${ESCPR2_DEB_URL}" ]; then
     echo "[escpr2] downloading from mirror ${ESCPR2_DEB_URL}"
     curl -fL --retry 3 --retry-delay 3 -o "${ESCPR2_DEB_FILE}" "${ESCPR2_DEB_URL}"
 
+    # ── 把 .deb 原件交给 driver-install 归档（包级持久化）────────────────
+    # 这个 deb 的 **298 个文件全部**装在 /opt/epson-inkjet-printer-escpr2/ 下，
+    # postinst 只在 /usr/share/ppd/ 建一个指向它的目录符号链接。文件级快照因此
+    # 一个文件都收不到（/opt 不在白名单、符号链接又不是 -type f）→ 老版本
+    # driver-install 会误判"什么都没装"直接 exit 1，而文件其实已经进了容器。
+    # 归档 .deb 是这个驱动能被持久化的**唯一**途径。
+    # 故意用 `|| true`：归档失败绝不影响安装成败判定与退出码语义（0/3/其他）。
+    if [ -n "${DRIVER_PKG_DIR:-}" ]; then
+        cp -a "${ESCPR2_DEB_FILE}" "${DRIVER_PKG_DIR}/" 2>/dev/null || true
+    fi
+
     # dpkg -i 报依赖问题时用 apt-get -f install 兜底。
     # ⚠️ 必须先 apt-get update：apt 需要包索引才能下载缺失的依赖，而 AIO 运行时
     # 的镜像里 /var/lib/apt/lists 可能是空的（构建期为省体积清过）。
@@ -164,10 +175,44 @@ ESCPR2_CFLAGS="-O2 -std=gnu17 \
 export CC="gcc"
 export CXX="g++"
 
-./configure --prefix=/usr --disable-static \
-    CFLAGS="${ESCPR2_CFLAGS}" \
-    CXXFLAGS="-O2 -std=gnu++17"
+# ── 为什么必须显式 --libdir ──────────────────────────────────────────────
+# escprlib/Makefile.am 里 `lib_LTLIBRARIES = libescpr2.la`，产物装进 $(libdir)。
+# autoconf 默认 libdir = ${exec_prefix}/lib，配上 --prefix=/usr 就是**裸 /usr/lib**
+# —— 而它不在 driver-install 的路径白名单里（白名单只有 /usr/lib/cups、
+# /usr/lib/firmware 和 multiarch 目录），于是 libescpr2.so.1.0.0 不进 manifest，
+# 容器重启后 filter 因为找不到共享库直接起不来。
+# 🚫 不要为此把裸 /usr/lib 加进白名单 —— 那是系统库的家，等于把"apt 依赖污染
+#    manifest 进而 driver-remove 删系统库"的门重新打开。正解是把库装到 multiarch
+#    目录（那本来就是 Debian 上共享库的正确位置）。
+# 探测方式与 driver-install.sh::detect_multiarch_libdir 保持一致（glob，不用
+# dpkg-architecture —— 它属于 dpkg-dev，runtime 镜像没装）；探测不到就保持
+# autoconf 默认行为，绝不用猜的路径。
+ESCPR2_LIBDIR=""
+for _d in /usr/lib/*-linux-gnu*; do
+    if [ -d "$_d" ]; then
+        ESCPR2_LIBDIR="$_d"
+        break
+    fi
+done
+
+if [ -n "${ESCPR2_LIBDIR}" ]; then
+    echo "[escpr2] using --libdir=${ESCPR2_LIBDIR}"
+    ./configure --prefix=/usr --libdir="${ESCPR2_LIBDIR}" --disable-static \
+        CFLAGS="${ESCPR2_CFLAGS}" \
+        CXXFLAGS="-O2 -std=gnu++17"
+else
+    echo "[escpr2] WARNING: 探测不到 multiarch 库目录，回退 autoconf 默认 libdir。"
+    echo "[escpr2] WARNING: libescpr2.so 可能落在 /usr/lib 而进不了驱动快照，重启后需重装。"
+    ./configure --prefix=/usr --disable-static \
+        CFLAGS="${ESCPR2_CFLAGS}" \
+        CXXFLAGS="-O2 -std=gnu++17"
+fi
 make -j"$(nproc)"
 make install
+
+# 验证共享库确实落在能被快照收进去的位置（不是致命错误，但要让日志说清楚）。
+if [ -n "${ESCPR2_LIBDIR}" ] && [ ! -f "${ESCPR2_LIBDIR}/libescpr2.so.1.0.0" ]; then
+    echo "[escpr2] WARNING: ${ESCPR2_LIBDIR}/libescpr2.so.1.0.0 未找到，请检查 make install 输出。"
+fi
 
 echo "[escpr2] installed version ${ESCPR2_VERSION}"

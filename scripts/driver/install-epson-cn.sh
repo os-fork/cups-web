@@ -58,16 +58,40 @@ wget --tries=3 --timeout=60 --retry-connrefused \
      --user-agent="${EPSON_PROP_UA}" \
      -O "${EPSON_PROP_UTILITY_DEB}" "${EPSON_UTIL_URL}"
 
-# dpkg -i 失败时用 apt-get -f install 兜底处理依赖。
-# ⚠️ 必须先 apt-get update：apt 需要包索引才能下载缺失依赖，AIO 运行时的镜像里
-# /var/lib/apt/lists 可能是空的（构建期为省体积清过）。
-if ! dpkg -i ./*.deb; then
-    echo "[epson-cn] dpkg reported dependency issues, fixing with apt-get -f install"
-    apt-get update
-    apt-get install -y -f --no-install-recommends
+# ── 把 .deb 原件交给 driver-install 归档（包级持久化）────────────────────
+# 本脚本的临时目录会被 EXIT trap 删掉，不交接的话重启后无从重装。而驱动本体的
+# 26 个文件（filter / libEpson_201601w.so / PPD / .data 资源 / 水印 EID）**全部**
+# 装在 /opt/epson-inkjet-printer-201601w/ 下，文件级快照只能抓到 utility 包提供的
+# 那一个 /usr/lib/cups/backend/ecblp —— 归档 .deb 才能完整恢复。
+# 故意用 `|| true`：归档失败绝不影响安装成败判定与退出码语义（0/3/其他）。
+if [ -n "${DRIVER_PKG_DIR:-}" ]; then
+    cp -a "${EPSON_PROP_DRIVER_DEB}" "${EPSON_PROP_UTILITY_DEB}" "${DRIVER_PKG_DIR}/" 2>/dev/null || true
 fi
 
-echo "[epson-cn] installed Epson CN proprietary driver + utility"
+# ⚠️ 这里**故意不用 `apt-get -f install` 兜底依赖**（老实现用过，是个大坑）：
+#
+# `epson-printer-utility` 是一个 **Qt5 GUI 工具**，声明依赖 libqt5core5a /
+# libqt5gui5 / libqt5widgets5 / libgcc1 —— 这些名字在 trixie 上都已 t64 改名，
+# 但改名包声明了 Provides，所以 apt "能"满足它们：于是 `apt-get -f install` 会把
+# 整套 Qt5 + X11/GL 栈（libQt5Core/Gui/Widgets/DBus/Network、libicu、libinput、
+# libxcb-* 等上百 MB）装进这个**无头容器**。后果有两层：
+#   ① 这些 .so 落在 /usr/lib/<triplet>，正好在 driver-install 的路径白名单**内**
+#      → 被当成"驱动产物"写进 epson-cn 的 manifest → `driver-remove epson-cn`
+#      会逐条 rm 掉系统库，restore 时还会用旧副本覆盖回去（实打实的破坏）；
+#   ② 快照体积暴涨上百 MB，restore 时 dpkg 要跑几十秒。
+#
+# 我们要的只是打印链路：驱动本体（filter/PPD/.so/资源）+ `epson-printer-utility`
+# 里的 CUPS backend `/usr/lib/cups/backend/ecblp` 与 `/usr/lib/epson-backend/ecbd`。
+# 这些都不需要 Qt5——Qt5 只是那个图形界面程序的依赖。所以用 `--force-depends`
+# 解包并 configure 两个包，把未满足的 GUI 依赖留在未满足状态即可。
+# （同样的结论 install-canon-ufr2.sh 也踩过：apt 修依赖时会选择**删掉**装不上的
+# 厂商包，比不修更糟。）
+if ! dpkg -i --force-depends ./*.deb; then
+    echo "[epson-cn] ERROR: dpkg -i --force-depends failed"
+    exit 1
+fi
+
+echo "[epson-cn] installed Epson CN proprietary driver + utility (GUI deps intentionally unmet)"
 # 只在构建期（非 AIO）清 apt 索引省镜像体积。
 # ⚠️ 在运行中的容器里清空 /var/lib/apt/lists 会让**后续安装的其他驱动**因为
 # 没有包索引而 apt-get install 失败（"连续装两个驱动"直接翻车）。

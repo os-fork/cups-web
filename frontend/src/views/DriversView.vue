@@ -191,6 +191,30 @@
               >
                 安装于 {{ row.original.installedArch }}，与当前架构不符，建议卸载重装
               </UBadge>
+              <!--
+                恢复方式徽章：厂商驱动普遍把产物装在 /opt、/usr/bin 等位置，只有归档了
+                .deb 原件（package / hybrid）才能在容器重启后完整装回来。老快照没有
+                restoreMode 字段，提示重装一次即可升级。
+              -->
+              <UTooltip
+                v-if="row.original.installed && row.original.restoreMode"
+                :text="restoreModeHint(row.original)"
+              >
+                <UBadge color="info" variant="subtle" size="xs">
+                  重启恢复: {{ restoreModeLabel(row.original.restoreMode) }}
+                  <template v-if="row.original.packageCount">
+                    （{{ row.original.packageCount }} 个包）
+                  </template>
+                </UBadge>
+              </UTooltip>
+              <UTooltip
+                v-else-if="row.original.installed"
+                text="这是旧版本安装的快照，只按文件清单恢复。厂商 deb 装在 /opt、/usr/bin 等位置的产物可能没被记录，容器重启后驱动可能残缺。卸载后重新安装一次即可升级为包级恢复。"
+              >
+                <UBadge color="warning" variant="subtle" size="xs">
+                  旧快照，建议重装
+                </UBadge>
+              </UTooltip>
             </div>
           </template>
           <template #actions-cell="{ row }">
@@ -274,10 +298,10 @@
         <!-- .deb 无法自动恢复，必须显式告知，不能静默丢失 -->
         <UAlert
           v-if="customDebs.length"
-          color="warning"
+          color="info"
           variant="subtle"
-          icon="i-lucide-triangle-alert"
-          title="已上传的 .deb 包（重启后需手动重装）"
+          icon="i-lucide-package"
+          title="已上传的 .deb 包（重启时自动重装）"
         >
           <template #description>
             <p class="mb-1">{{ customDebNotice }}</p>
@@ -723,6 +747,37 @@ function formatDate(dateStr) {
   return `${y}-${m}-${day}`
 }
 
+// restore_mode 由 scripts/driver/driver-install.sh 写进 metadata.txt：
+//   package —— 全部产物都在归档的 .deb 里（最完整）
+//   hybrid  —— 归档 .deb + 少量散落文件快照
+//   files   —— 纯文件级快照（源码编译类驱动，产物都在白名单目录内）
+function restoreModeLabel(mode) {
+  switch (mode) {
+    case 'package':
+      return '包级'
+    case 'hybrid':
+      return '包级+文件'
+    case 'files':
+      return '文件级'
+    default:
+      return mode
+  }
+}
+
+function restoreModeHint(row) {
+  const n = row.packageCount || 0
+  switch (row.restoreMode) {
+    case 'package':
+      return `容器重启时用归档的 ${n} 个 .deb 重新安装，产物完整恢复（含 /opt、/usr/bin 等位置的文件）。`
+    case 'hybrid':
+      return `容器重启时先用归档的 ${n} 个 .deb 重装，再补上文件级快照里的散落文件。`
+    case 'files':
+      return '容器重启时按文件清单逐个恢复。此驱动的产物都落在受监控的目录内，文件级恢复即完整。'
+    default:
+      return ''
+  }
+}
+
 async function loadDrivers() {
   try {
     const resp = await apiFetch('/api/admin/drivers', {}, () => emit('logout'))
@@ -826,7 +881,8 @@ async function uploadDriver() {
     const data = await resp.json()
     toast.add({
       title: '上传成功',
-      // .deb 不会随容器重启自动恢复，后端会在 warning 里说明，必须透传给用户
+      // 正常情况下 .deb 会被归档并在容器重启时自动重装，没有 warning；
+      // 只有归档失败（重启后恢复不了）时后端才给 warning，必须透传给用户
       description: data.warning
         ? `驱动文件 ${uploadFile.value.name} 已安装。${data.warning}`
         : `驱动文件 ${uploadFile.value.name} 已安装`,

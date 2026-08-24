@@ -535,6 +535,16 @@ Device: uri = socket
 		t.Fatalf("expected 1 printer, got %d", len(printers))
 	}
 	p := printers[0]
+	// ⚠️ device URI 必须**逐字节原样保留**：%20 不能被解码成空格、`?serial=` 查询段
+	// 不能被截断。CUPS 的 usb backend 生成的 URI 来自 IEEE-1284 Device ID 的 MFG/MDL
+	// 字段，空格就是 %20；一旦我们在传给 `lpadmin -v` 之前动过它（解码、替换成下划线、
+	// 或 url.Parse 往返），backend 就再也匹配不上"那一台"打印机，队列会永久停在
+	// "Waiting for printer to become available"。
+	// 这个不变量以前只靠代码自觉（parseDeviceURI 里的 PathUnescape 只用于推导型号，
+	// 不碰 DeviceURI），没有回归护栏 —— 补上。
+	if p.DeviceURI != "usb://HP/LaserJet%201020?serial=XXXX" {
+		t.Errorf("DeviceURI 必须原样保留，got %q", p.DeviceURI)
+	}
 	if p.DeviceID != "MFG:HP;MDL:LaserJet 1020;CMD:PJL,MLC,PCL;" {
 		t.Errorf("DeviceID = %q", p.DeviceID)
 	}

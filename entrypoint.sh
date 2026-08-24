@@ -33,6 +33,27 @@ if [ ! -f /etc/cups/cupsd.conf ]; then
     cp -rpn /etc/cups-bak/* /etc/cups/
 fi
 
+# ── 下面两条对**存量卷**做幂等修补 ────────────────────────────────────────
+# ⚠️ 上面那个 if 只看 cupsd.conf 一个文件。挂载的 ./.etc 卷里如果已经有一份（旧版本
+# 留下的、或用户从别处拷来的）cupsd.conf，整块还原就被跳过 —— 于是新版镜像在基线里
+# 加的东西，存量用户永远拿不到。所以需要在 if **之外**单独补。
+
+# ① ssl 目录：cupsd 自己不会建（见 Dockerfile 里的说明），缺了它 ipps/AirPrint
+#    握手会失败并在 error_log 刷 "Unable to create server credentials"。
+#    无条件保证存在，代价只是一次 mkdir。
+mkdir -p /etc/cups/ssl 2>/dev/null || true
+chmod 700 /etc/cups/ssl 2>/dev/null || true
+
+# ② ReadyPaperSizes：iPhone AirPrint 面板的纸张列表读 IPP media-ready，而 CUPS 的
+#    media-ready 只由 ReadyPaperSizes ∩ PPD 尺寸决定（跟 media-default 无关，所以
+#    `lpadmin -o media=` 修不了它）。不配时按 locale 兜底成 Letter,Legal,... → A4
+#    永远不出现（issue #82）。
+#    只在用户完全没写过这一项时追加，绝不覆盖用户的显式配置。
+if [ -f /etc/cups/cupsd.conf ] && ! grep -qiE '^[[:space:]]*ReadyPaperSizes' /etc/cups/cupsd.conf; then
+    echo "ReadyPaperSizes A4,A3,A5,A6,EnvDL" >> /etc/cups/cupsd.conf
+    echo "[entrypoint] 已为存量配置追加 ReadyPaperSizes（A4 系列），让 AirPrint 面板能选到 A4（issue #82）"
+fi
+
 # ══════════════════════════════════════════════════════════════
 # 4. HP 1020 PPD Letter→A4 patch (from cups/entrypoint.sh)
 # ══════════════════════════════════════════════════════════════
@@ -189,17 +210,22 @@ done
 # ══════════════════════════════════════════════════════════════
 # 9. AirPrint A4 media-ready patch (from cups/entrypoint.sh)
 # ══════════════════════════════════════════════════════════════
-# ── 让 AirPrint 面板把 A4 作为已装纸(media-ready)通告(issue #82) ──────
-# issue #48 只把 PPD 的 *DefaultPageSize 改成 A4(对应 IPP media-default)，
-# 但 iPhone 原生 AirPrint 打印面板的「纸张大小」候选列表读的是 media-ready
-# /media(当前已装纸)，不是 media-default。实测(issue #82 截图)即使
-# media-default 已是 A4，iOS 面板仍只列出 Letter/Env10 且勾选 Letter——
-# 说明只改 default 不够，得把队列的当前媒体(media-ready)也显式设成 A4。
+# ── 把 HP 1020 队列的默认纸张设成 A4 ────────────────────────────────────
+# issue #48 把 PPD 的 *DefaultPageSize 改成 A4；这里再把**队列**的默认媒体
+# (IPP media-default) 也设成 A4，让 iOS 打印面板打开时预选 A4 而不是 Letter。
+#
+# ⚠️ 更正一处长期的误解：本段注释以前写着"CUPS 随之把 media-ready 通告成 A4"，
+# **这句不成立**。按 CUPS 源码（scheduler/printers.c 的 load_ppd），`media-ready`
+# 的唯一写入点是拿 `ReadyPaperSizes` 去和 PPD 支持的尺寸求交集，跟 media-default
+# 完全无关。`lpadmin -o media=` 只写 media-default。
+# 也就是说 issue #82 抱怨的"iPhone 纸张列表里没有 A4"并不是靠这一句修好的——
+# 真正起作用的是 cupsd.conf 里的 `ReadyPaperSizes`（见本脚本第 3 步与 Dockerfile）。
+# 这一句保留，因为它确实负责"面板默认勾选 A4"这件事，只是别再把它当成
+# media-ready 的解法。
 #
 # 手法：cupsd 起来后对存量 HP 1020 队列执行
 #   lpadmin -p NAME -o media=iso_a4_210x297mm
-# 该选项写入队列默认媒体，CUPS 随之把 media-ready 通告成 A4，iOS 面板即可
-# 选中 A4。lpadmin 需要 cupsd 在线(走 IPP)，所以放后台等 cupsd 就绪后执行，
+# lpadmin 需要 cupsd 在线(走 IPP)，所以放后台等 cupsd 就绪后执行，
 # 不阻塞启动；exec 替换父进程不会杀掉已 fork 的后台子 shell。
 # 命中条件与 issue #48 的一次性 PPD 修补一致(HP 1020 foo2zjs 双重指纹 +
 # PageSize 列表含 A4)，队列名由 /etc/cups/ppd/<printer>.ppd 文件名反推。
@@ -216,9 +242,9 @@ done
             grep -q '^\*DefaultPageSize:[[:space:]]\+A4[[:space:]]*$' "$ppd" || continue
             printer_name="$(basename "$ppd" .ppd)"
             if lpadmin -p "$printer_name" -o media=iso_a4_210x297mm 2>/dev/null; then
-                echo "[entrypoint] set media(ready)=A4 on $printer_name (issue #82)"
+                echo "[entrypoint] set media-default=A4 on $printer_name (issue #48/#82)"
             else
-                echo "[entrypoint] WARN: failed to set media=A4 on $printer_name (issue #82)"
+                echo "[entrypoint] WARN: failed to set media-default=A4 on $printer_name (issue #48/#82)"
             fi
         done
     fi

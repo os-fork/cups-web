@@ -43,9 +43,14 @@ if $SHOW_INSTALLED_ONLY; then
             install_date=""
             install_arch=""
 
+            restore_mode=""
+            pkg_count=""
+
             if [ -f "${driver_dir}metadata.txt" ]; then
                 install_date=$(grep '^installed_at=' "${driver_dir}metadata.txt" 2>/dev/null | cut -d= -f2-)
                 install_arch=$(grep '^arch=' "${driver_dir}metadata.txt" 2>/dev/null | cut -d= -f2-)
+                restore_mode=$(grep '^restore_mode=' "${driver_dir}metadata.txt" 2>/dev/null | cut -d= -f2-)
+                pkg_count=$(grep '^package_count=' "${driver_dir}metadata.txt" 2>/dev/null | cut -d= -f2-)
             fi
 
             echo "  * ${driver_name}"
@@ -56,6 +61,14 @@ if $SHOW_INSTALLED_ONLY; then
                 echo "      Architecture: ${install_arch}"
             fi
             echo "      Files: ${file_count}"
+            # restore_mode 是 v2 快照才有的键；老快照没有这一行，此时不打印（纯文件级）。
+            if [ -n "$restore_mode" ]; then
+                if [ -n "$pkg_count" ] && [ "$pkg_count" != "0" ]; then
+                    echo "      Restore: ${restore_mode} (${pkg_count} package(s))"
+                else
+                    echo "      Restore: ${restore_mode}"
+                fi
+            fi
             echo ""
         done
     fi

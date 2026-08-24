@@ -6,13 +6,104 @@
 
 ## 持久化原理（为什么不需要 `CAP_SYS_ADMIN`）
 
-`driver-install.sh` 的流程是**纯文件系统 diff**，不涉及任何 overlay/mount 魔法：
+不涉及任何 overlay/mount 魔法。有**两条通道**，按驱动来源分流（为什么必须分流见下一节）：
 
-1. 安装前对 `MONITORED_DIRS` 做 `find -type f` 快照（`/usr/lib/cups`、`/usr/share/cups`、`/usr/share/ppd`、`/lib/firmware`、`/usr/share/foomatic`，外加探测到的 multiarch 目录 `/usr/lib/<triplet>`），同时 `dpkg --get-selections` 记录包状态
-2. 跑 `install-<name>.sh`（`export CUPS_AIO=1`）
+**文件级通道**（非包来源的驱动：源码编译 / 手工 cp / unzip / 固件生成）：
+
+1. 安装前对 `MONITORED_DIRS` 做 `find \( -type f -o -type l \)` 快照（`/usr/lib/cups`、`/usr/share/cups`、`/usr/share/ppd`、`/lib/firmware`、`/usr/share/foomatic`，外加探测到的 multiarch 目录 `/usr/lib/<triplet>`），同时 `dpkg-query -W` 记录包名+版本
+2. 跑 `install-<name>.sh`（`export CUPS_AIO=1` + `export DRIVER_PKG_DIR=<交接目录>`）
 3. 安装后再快照，`comm -13` 求出新增文件；再把"本次新装的 dpkg 包"（`dpkg -L` 展开）里**通过白名单的**文件也并进来
-4. 白名单过滤 + 去重 → 逐个 `cp -a` 到 `/opt/cups-drivers/data/<driver>/<绝对路径>` → 写 `manifest.txt` + `metadata.txt` → `ldconfig`
-5. 容器重启时 `entrypoint.sh` 第一步跑 `restore-drivers`，逐行读 manifest，`mkdir -p` 父目录后 `cp -a` 回系统路径，最后 `ldconfig`
+4. 路径白名单 + baseline 归属守卫过滤 → 减去被跳过的包所拥有的文件 → 减去已归档 `.deb` 覆盖的文件 → 逐个 `cp -aT` 到 `/opt/cups-drivers/data/<driver>/<绝对路径>` → 写 `manifest.txt` + `metadata.txt` → `ldconfig`
+5. 容器重启时 `entrypoint.sh` 第一步跑 `restore-drivers`，逐行读 manifest，`mkdir -p` 父目录后 `cp -aT --remove-destination` 回系统路径，最后 `ldconfig`
+
+**包级通道**（dpkg 包来源的驱动）：归档 `.deb` 原件到 `packages/` + 登记 `packages.txt`，重启时 `dpkg -i` 装回去，卸载时按包 purge。**完全绕开路径白名单** —— 删哪些文件由 dpkg 自己的 `.list` 决定，天然精确。
+
+`.deb` 原件的捕获分四层，前面命中就不用后面：
+
+| 层 | 手段 | 适用 | 局限 |
+| --- | --- | --- | --- |
+| A | apt 钩子 `DPkg::Pre-Install-Pkgs` → `capture-debs` | `apt-get install` 来源 | 需要能写 `/etc/apt/apt.conf.d/` |
+| B | 厂商脚本把下载好的 `.deb` 拷到 `$DRIVER_PKG_DIR` | 自己 curl/wget 的厂商 deb | 需要脚本配合（一行） |
+| C | `/var/cache/apt/archives/` 打捞 | 离线可用 | 脚本可能已 `apt-get clean` |
+| D | `apt-get download <pkg>=<ver>` | 最后兜底 | 需要网络 + 索引 |
+
+Layer A 是最可靠的：它拿到的是 apt **真正要装的那批 deb 文件本身**（含全部传递依赖），发生在任何 `apt-get clean` 之前，不需要重新下载、不需要猜版本。
+
+> 🚫 `capture-debs` **必须永远 `exit 0`**。`DPkg::Pre-Install-Pkgs` 返回非零会让 apt 中止**整个安装事务** —— 一个归档辅助脚本绝不能有能力弄挂驱动安装。它还必须在 `/run/cups-drivers/capture-target` 不存在时静默空跑，这样即使 `driver-install` 被 SIGKILL、drop-in 残留，后续任何 apt 操作也只是白跑一次。
+>
+> 🚫 厂商脚本的交接行必须写成 `[ -n "${DRIVER_PKG_DIR:-}" ] && cp -a "$DEB" "$DRIVER_PKG_DIR/" 2>/dev/null || true` —— **不新增 `trap`**（不碰"只允许一个 EXIT trap"约定）、**`|| true`**（不改变 `0/3/其他` 的退出码语义）、变量未设置时行为与以前完全一致（构建期或手工执行仍可用）。
+
+**归档剪枝**用两个"天然正确"的条件，不需要遍历依赖闭包：① 包在 `install-*.sh` 退出后**仍处于 installed 状态**（AIO 编译型脚本会在自己的 EXIT trap 里 `apt-get purge --auto-remove` 掉工具链 → 自动被剪掉，无需维护列表）；② 包**不在 `baseline-packages.txt` 里**（绝不归档镜像自带组件，否则 restore 时会把系统组件降级）。再叠一层包名 DENY 作为"purge 失败时"的第二道保险。
+
+## ⚠️ 为什么 dpkg 来源必须走包级通道（9 个驱动的实测结果）
+
+这不是理论推演。把仓库里每个 `install-*.sh` 的产物实际下载下来核对后，**机制边界与故障边界完全吻合**：文件级快照出问题的 5 个驱动**全部是 dpkg 包来源**，完整的 4 个**全部是非包来源**。
+
+| 驱动 | 来源 | 老实现（纯文件级）的结果 |
+| --- | --- | --- |
+| `escpr2`（amd64/armhf） | 厂商 deb | 🔴 **必然 `exit 1`**。deb 的 298 个文件**全部**在 `/opt/epson-inkjet-printer-escpr2/`，postinst 只在 `/usr/share/ppd/` 建一个目录符号链接；`find -type f` 不采集符号链接、`/opt` 不在白名单 → 新文件列表为空 → 判"什么都没装"。但文件其实已进容器，于是 UI 报失败而系统里驱动生效，状态自相矛盾；又因为没写 manifest，"已安装"拦截也失效，用户重复点击会反复重下 |
+| `epson-cn` | 厂商 deb ×2 | 🔴 **会删系统库**。deb 依赖 Qt5，trixie 上靠 t64 改名包满足，老实现的 `apt-get -f install` 会拉进整套 Qt5+X11/GL（实测计划新装 **146 个包**）。这些 `.so` 落在 multiarch 目录 —— 正在白名单**内** → 被当驱动产物记进 manifest → `driver-remove` 逐条 `rm` 掉系统库，restore 每次开机还用旧副本覆盖回去。同时驱动**本体**（`/opt/epson-inkjet-printer-201601w/` 的 26 个文件）0 个进 manifest |
+| `canon-ufr2` | 厂商 deb | 🔴 418/1294 进 manifest。漏 `/usr/bin/cnrsdrvufr2`+`cnpdfdrv`（**真正的渲染引擎**，`rastertoufr2` 通过 exec 调用它们）、裸 `/usr/lib/lib*ufr2*.so`×9、`/usr/share/caepcm/**`×356（ICC）、`/usr/share/ufr2filterr/*.BIN`×6（半色调表）→ 队列看起来正常但**每个作业都失败** |
+| `gutenprint` | apt | 🔴 漏 `libgutenprint-common` 的 `/usr/share/gutenprint/5.3/xml/**`≈370 个机型定义 → `lpinfo -m` 一个 gutenprint 机型都列不出来。UI 仍显示"已安装" |
+| `konica-bizhub` | 厂商 deb | 🔴 只有 1 个 PPD 进 manifest。漏整个 `/opt/km/**`（含 filter 真身 `lpdwrapper`、`rawtobr3`）、以及 postinst **现建**的符号链接 `/usr/lib/cups/filter/km_BIZHUB3000MF`（它落在白名单目录内，但 `find -type f` 排除符号链接，而 `dpkg -L` 里也没有它 —— postinst 现建的东西不在包文件列表里）→ `filter failed` |
+| `canon-capt` | 源码编译 | ✅ 完整（手工 cp filter + PPD，都在白名单内） |
+| `hp-laserjet1020` | pyppd 生成 | ✅ 完整（`/lib/firmware/hp/` + `/usr/share/cups/model/HP/`） |
+| `sharp` | unzip | ✅ 完整（4 个 PPD 到 `/usr/share/cups/model/Sharp/`） |
+| `foo2zjs-firmware` | 固件生成 | 🟢 基本完整（仅漏 2 个别名符号链接，而上游 `hplj*` 脚本自己做了 `FWMODEL` 映射，P1007/P1008 加载的就是 `sihpP1005/1006.dl`，无功能影响） |
+
+改成包级后逐个实测（装 → **销毁重建容器** → 验证）：escpr2 恢复出 filter + 共享库 + 280 个 PPD + postinst 符号链接；canon-ufr2 恢复出渲染引擎 + 356 ICC + 6 半色调表 + 27 个 `.so` + 414 PPD，`ldd` 零缺失；gutenprint 恢复出 318 个 XML，driver 程序列出 **3590** 个机型；konica 恢复出指向 `/opt/km/.../lpdwrapper` 的符号链接；epson-cn 恢复出驱动本体且 Qt5 包数为 **0**。
+
+> ⚠️ **验证时必须销毁重建容器，不能 `docker restart`**。restart 保留容器可写层，驱动文件本来就还在，测不出任何东西 —— 会假通过。
+
+### 🚫 CUPS 自身的包绝不能进驱动快照
+
+本镜像的 CUPS 是**源码编译**的（2.4.19，`cups-compiled.tar` overlay 解包进 `/usr`），apt 侧只装了 `cups-daemon` / `cups-client` / `cups-filters`，**故意没有 `cups` 元包**。
+
+而 `printer-driver-gutenprint` 声明 `Depends: cups, cups-client, cups-filters | ghostscript-cups`，Konica 的 deb 声明 `Depends: cups | cupsd`。一旦让 apt 去满足这个依赖，它就会装上 Debian 的 `cups-core-drivers`（还有 `cups-ppdc` / `cups-server-common` / `cups` 元包），而 `cups-core-drivers` 提供的正是 `/usr/lib/cups/backend/{usb,socket,lpd,dnssd,snmp,mdns}` 和一批 filter —— **直接覆盖源码编译的同名文件**，让 2.4.19 与 Debian 2.4.10 的组件混用。
+
+实测 Konica 那条路径会让 **564 个 CUPS 自身的文件**被算进该驱动的快照 → `driver-remove konica-bizhub` 会把 CUPS 的 usb/socket backend 一起删掉 → 所有打印机失效。包级归档还会让它每次开机 restore 时重新覆盖一遍。
+
+两层处理：**根治**是各 `install-*.sh` 用 `dpkg -i --force-depends` 跳过 `cups` 元包这个空壳（驱动 filter 实际只链接 libcups/libcupsimage，元包对它毫无意义）；**安全网**是 `driver-install.sh` 的 `PKG_NAME_DENY_PATTERNS` 里列上 `cups` / `cups-core-drivers` / `cups-ppdc` / `libcups*` 等，并且这些被跳过的包所拥有的文件会从 manifest 里显式减掉（只靠 baseline 守卫拦不住 —— 它们是**运行期新装**的，不在 baseline 索引里）。
+
+## ⚠️ baseline 归属守卫：路径白名单的结构性盲区
+
+路径白名单按**路径前缀**判断，而 multiarch 目录（`/usr/lib/<triplet>`）**既是驱动共享库的家、也是系统库的家**。上面 `epson-cn` 那一行就是后果：apt 依赖解析拖进来的 Qt5 `.so` 落在白名单**内**，于是被当成驱动产物。按路径根本分不开。
+
+按**包属主**就分得干干净净：构建期 `dpkg-query -W -f '${Package}\n'` 把当时已安装的全部包名存进 `/opt/cups-drivers/baseline-packages.txt`，三个脚本据此把"镜像自带包拥有的文件"一律排除 —— install 侧不记录、remove 侧不删、restore 侧不覆盖。
+
+实现要点（都是为了别让守卫本身变成性能问题）：
+
+- baseline 包名先读进 bash 关联数组做 O(1) 判断，**不要**对两千多个 `.list` 文件各 fork 一次 `grep`
+- 只 `cat` baseline 包自己的 `/var/lib/dpkg/info/*.list`；multiarch 包的清单名形如 `<pkg>:<arch>.list`，比对前要把 `:arch` 去掉
+- 与 manifest 求**一次** `comm -12` 交集存进关联数组，之后逐条查是 O(1) —— 比"每条 manifest 记录都 grep 一遍十几万行的索引"快几个数量级
+
+两个时间线都自洽：**同一容器内** remove 时，Qt5 是运行期装的（非 baseline）→ 可以按包 purge 掉，比逐个 `rm -f .so` 正确得多；**重启后**新容器的 dpkg 库 = baseline，被旧快照 `cp` 回来的 Qt5 副本是"无主文件"→ 删掉也无害，而真正的镜像自带文件被守卫挡住。
+
+> ⚠️ 这份守卫和三份路径白名单一样**三处各有一份**，理由相同：remove/restore 侧是给**存量已被污染的快照**兜底的。🚫 不要因为 install 侧已经拦过就删掉另外两份。
+>
+> ⚠️ `baseline-packages.txt` 必须留在**镜像层**（不能放进 `/opt/cups-drivers/data` —— 那会被 volume 挂载覆盖），且必须生成于**所有 apt 安装之后**（否则漏记的包会被误判成"驱动装的"）。文件缺失时守卫降级为"只做路径白名单"并打印一次警告。
+
+## ⚠️ 符号链接：四处判断必须配套
+
+靠符号链接工作的驱动不止一个（Konica 的 postinst 现建 filter 链接、foo2zjs 的机型别名、Epson 的 `/usr/share/ppd/<pkg> -> /opt/.../ppds`），而 shell 的文件测试对符号链接有几个反直觉的地方，缺一处就是新坑：
+
+| 位置 | 改法 | 不改会怎样 |
+| --- | --- | --- |
+| `driver-install.sh` 的两处 `find` | `\( -type f -o -type l \)` | 符号链接永远进不了 manifest（`dpkg -L` 也补不上 —— postinst 现建的东西不在包文件列表里） |
+| `driver-install.sh` 存快照前的判断 | `[ -e ] \|\| [ -L ]` | **指向目录的符号链接在 `-f` 下判假**（`-f` 会跟随链接判断目标是否普通文件）→ 静默跳过 |
+| `restore-drivers.sh` 的源存在判断 | 同上 | 同上 |
+| `restore-drivers.sh` 的 `cp` | `cp -aT --remove-destination` | 目标已存在且本身是**指向目录的符号链接**时，cp 会先跟随它、判定"目标是目录"，于是把源**拷进那个目录里**而不是替换链接。实测 `--remove-destination` 单独**无效**（它只处理"目标是普通文件"），只有 `-T`（`--no-target-directory`）能强制把目标当作路径本身 |
+| `driver-remove.sh` 的删除判断 | `[ -f ] \|\| [ -L ]` | 符号链接删不掉、只计入 `missing_count`，卸载后在 `/usr/lib/cups/filter/` 留一个悬空链接，CUPS 每次枚举都踩到 |
+
+`-T` 的副作用是目标若为**真目录**则 cp 失败 —— 那正是我们想要的：manifest 条目本就不该是目录，失败会被计入 `error_count` 并告警。
+
+## ⚠️ `--libdir`：autoconf 默认值会把库放进白名单外
+
+`install-escpr2.sh` 的源码编译分支（arm64 等无预编译包的架构）原本只传 `--prefix=/usr`。但 `escprlib/Makefile.am` 里 `lib_LTLIBRARIES = libescpr2.la`，产物装进 `$(libdir)`，而 autoconf 默认 `libdir = ${exec_prefix}/lib` → **裸 `/usr/lib`** —— 它不在白名单里（白名单只有 `/usr/lib/cups`、`/usr/lib/firmware` 和 multiarch 目录），于是 `libescpr2.so.1.0.0` 不进 manifest，容器重启后 filter 因为找不到共享库直接起不来。
+
+🚫 **不要为此把裸 `/usr/lib` 加进白名单** —— 那是系统库的家，等于把上面 `epson-cn` 那个"apt 依赖污染 manifest 进而删系统库"的门重新打开，而且这次连 multiarch 都不用绕。
+
+正解是显式 `--libdir=<multiarch 目录>`（那本来就是 Debian 上共享库的正确位置）。探测方式与 `driver-install.sh::detect_multiarch_libdir` 保持一致（glob `/usr/lib/*-linux-gnu*`，**不用** `dpkg-architecture` —— 它属于 `dpkg-dev`，runtime 镜像没装）；探测不到就保持 autoconf 默认行为并打印警告，绝不用猜的路径。
 
 ## ⚠️ manifest 白名单：为什么必须存在，且三处都要有
 
@@ -71,7 +162,16 @@ runtime 镜像**没有 `dpkg-dev`**，所以：
 
 ### `.deb`
 
-`dpkg -i` 失败时 `apt-get install -y -f --no-install-recommends` 补依赖，**然后必须再 `dpkg -i` 一次**（老实现修完依赖就返回，等于白跑一趟 apt）。成功后只把原件归档到 `custom-deb/packages/`，**故意不写 `manifest.txt`**——`restore-drivers` 是按 manifest 里的绝对路径 `cp -a` 回文件系统的，对 `.deb` 毫无意义（真正的安装动作在 maintainer script 里），写了只会把 `.deb` 文件拷到荒谬的路径。因此 **`.deb` 上传不会随容器重启自动恢复，重启后需要手动重装**；`GET /api/admin/drivers` 会连同 `customDebNotice` 一起把这句话回给前端，`upload` 响应里也有 `warning` 字段。
+`dpkg -i` 失败时 `apt-get install -y -f --no-install-recommends` 补依赖，**然后必须再 `dpkg -i` 一次**（老实现修完依赖就返回，等于白跑一趟 apt）。
+
+成功后把原件归档到 `custom-deb/packages/` **并登记 `packages.txt`**（`<pkg> <version> <arch> <文件名>`，包名/版本/架构用 `dpkg-deb -f` 从控制信息里读，读不到就退回用文件名当包名）。容器启动时 `restore-drivers` 走**包级通道**把它 `dpkg -i` 装回来，幂等（已装且版本不更旧就跳过）。
+
+仍然**不写 `manifest.txt`**——文件级恢复是按 manifest 里的绝对路径逐条 `cp -aT` 回文件系统的，对 `.deb` 毫无意义（真正的安装动作在 maintainer script 里），写了只会把 `.deb` 文件拷到荒谬的路径。包级恢复才是 `.deb` 的正确归宿。
+
+这修掉了一个长期的坑：以前这里只归档不登记，用户上传的 `.deb` **每次容器重启都得手动重新上传一遍**。
+
+- 存量"只归档未登记"的 `.deb` 会被 `restore-drivers` 按 glob `packages/*.deb` **自动收养**，用户不需要做任何迁移动作
+- ⚠️ 代价是**一个装不上的坏包会每次开机重试**。出口有两个：删掉宿主 `./.drivers/custom-deb/packages/` 下的对应文件；或从 `packages.txt` 里删掉那一行。`customDebNotice` 已经把这句话回给前端
 
 ### 🔐 安全风险面（有意保留的管理员能力）
 

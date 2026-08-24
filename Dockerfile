@@ -257,13 +257,53 @@ RUN tar xf /tmp/cups-compiled.tar -C / && rm /tmp/cups-compiled.tar && ldconfig
 # ────────────────────────────────────────────────────────────────
 # CUPS configuration: 放开监听 + 浏览，备份默认配置供 entrypoint 还原
 # ────────────────────────────────────────────────────────────────
+# ⚠️ 这里改的 /etc/cups/cupsd.conf **来自 apt 的 cups-daemon**（trixie 2.4.10），
+# 不是源码编译那份：cups-builder 阶段打的 cups-compiled.tar 只含 /usr 路径，
+# 整个 /etc 都不在里面。所以 Location/Policy 段的出厂内容按 Debian 的来理解。
 RUN sed -i 's/Listen localhost:631/Listen 0.0.0.0:631/' /etc/cups/cupsd.conf && \
-    sed -i 's/Browsing Off/Browsing On/' /etc/cups/cupsd.conf && \
     sed -i 's/<Location \/>/<Location \/>\n  Allow All/' /etc/cups/cupsd.conf && \
-    sed -i 's/<Location \/admin>/<Location \/admin>\n  Allow All\n  Require user @SYSTEM/' /etc/cups/cupsd.conf && \
+    sed -i 's/<Location \/admin>/<Location \/admin>\n  Allow All/' /etc/cups/cupsd.conf && \
     sed -i 's/<Location \/admin\/conf>/<Location \/admin\/conf>\n  Allow All/' /etc/cups/cupsd.conf && \
+    sed -i 's/<Location \/admin\/log>/<Location \/admin\/log>\n  Allow All/' /etc/cups/cupsd.conf && \
     echo "ServerAlias *" >> /etc/cups/cupsd.conf && \
-    echo "DefaultEncryption Never" >> /etc/cups/cupsd.conf
+    echo "DefaultEncryption Never" >> /etc/cups/cupsd.conf && \
+    echo "ReadyPaperSizes A4,A3,A5,A6,EnvDL" >> /etc/cups/cupsd.conf
+# 说明本段每一条的理由（前人踩过的坑，别再改回去）：
+#   - Listen 0.0.0.0:631 —— 容器外要能连。
+#   - `<Location />` / `/admin` / `/admin/conf` 加 Allow All —— 出厂是
+#     `Order allow,deny` 且没有任何 Allow，即默认拒绝远程。
+#   - `<Location /admin/log>` 也要加 —— 否则远程打不开 CUPS Web UI 的日志页
+#     （403），排查 AirPrint/共享问题时看不到 error_log。
+#   - **不再** sed `Browsing Off` → `Browsing On`：出厂文件里写的是 `Browsing Yes`，
+#     那条 sed 从来没匹配过，是个空操作（Browsing 本来就是开的）。
+#   - **不再**给 `<Location /admin>` 注入 `Require user @SYSTEM`：出厂文件里已经有
+#     一行，注入只会产生重复行。
+#   - DefaultEncryption Never —— 出厂默认是 Required，那会让远程客户端在需要认证时
+#     收到 426 Upgrade Required（表现为"发现得到打印机但无法通信"）。
+#   - ReadyPaperSizes —— 见下方 issue #82 的说明。
+#
+# ── ReadyPaperSizes：iPhone AirPrint 面板里的纸张列表（issue #82 的真正修法）──
+# iOS 的纸张候选读的是 IPP 的 `media-ready`（当前已装纸），而 CUPS 里 media-ready
+# **只**由 `ReadyPaperSizes` ∩ PPD 支持的尺寸决定（scheduler/printers.c 的 load_ppd
+# 里唯一的写入点），跟 `media-default` 毫无关系。
+# 🚫 所以 `lpadmin -p X -o media=iso_a4_210x297mm` **修不了这个问题** —— 它只设
+#    media-default（影响未指定纸张时的默认值和面板预选项），列表不会变。
+# 不配 ReadyPaperSizes 时 cupsd 按 locale 兜底：本镜像没设 LANG/LC_ALL，locale 是 C
+# → 走 Letter 分支 → 兜底成 `Letter,Legal,Tabloid,4x6,Env10`，A4 永远不出现。
+# 这里显式给 A4 系列。⚠️ 值必须是 **PPD 尺寸名**（A4/A3/A5/A6/EnvDL），不是 PWG 名
+# （iso_a4_210x297mm）——cupsd 是拿它跟 PPD 里的 PageSize 名比对的。
+# 顺带一个好消息：改 cupsd.conf 会让 var/cache/*.data 里的 PPD 缓存自动失效
+# （缓存有效性判据包含 cupsd.conf 的 mtime），不需要手工清缓存。
+
+# ── ssl 目录 ─────────────────────────────────────────────────────────────
+# cupsd **不会**自己创建 ServerRoot/ssl：源码里那处 cupsdCheckPermissions 的
+# create_dir 参数传的是 0，lstat 失败时既不 mkdir 也不报错，启动静默通过，直到
+# 第一次 ipps 握手才炸 `Unable to create server credentials` /
+# `Unable to encrypt connection`。而 AirPrint 客户端优先挑 _ipps._tcp。
+# 目前这个目录之所以存在，纯粹是因为 Debian 的 cups-daemon 把它作为 package-owned
+# 空目录发布了 —— 那是别人的实现细节，不该依赖。显式建出来，并确保它进 cups-bak
+# 基线（entrypoint 还原空卷时会带上）。
+RUN mkdir -p /etc/cups/ssl && chmod 700 /etc/cups/ssl
 RUN cp -rp /etc/cups /etc/cups-bak
 
 # ────────────────────────────────────────────────────────────────
@@ -340,12 +380,31 @@ COPY scripts/driver/driver-install.sh /usr/local/bin/driver-install
 COPY scripts/driver/driver-list.sh /usr/local/bin/driver-list
 COPY scripts/driver/driver-remove.sh /usr/local/bin/driver-remove
 COPY scripts/driver/restore-drivers.sh /usr/local/bin/restore-drivers
+# apt 的 DPkg::Pre-Install-Pkgs 钩子：driver-install 期间临时挂上，用来归档 apt
+# 即将安装的 .deb 原件（包级驱动持久化）。放 libexec 而不是 /usr/local/bin —— 它
+# 不是给人用的命令。见 scripts/driver/capture-debs.sh 的文件头注释。
+COPY scripts/driver/capture-debs.sh /opt/cups-drivers/libexec/capture-debs
 # 预建 /opt/cups-drivers/data：driver-install 把驱动文件持久化到这里、driver-list 靠
 # 其下的 <name>/manifest.txt 判断驱动是否已装。正常部署会用 volume 挂载覆盖它，但不挂卷
 # 直接 `docker run` 时目录也得存在，驱动安装/列表才不会因缺目录而行为异常（此时数据随容器
 # 销毁而丢失，属预期行为）。
-RUN chmod +x /usr/local/bin/driver-* /usr/local/bin/restore-drivers /opt/cups-drivers/scripts/*.sh && \
+RUN chmod +x /usr/local/bin/driver-* /usr/local/bin/restore-drivers \
+             /opt/cups-drivers/scripts/*.sh /opt/cups-drivers/libexec/capture-debs && \
     mkdir -p /opt/cups-drivers/data
+
+# ── baseline 包名快照（驱动管理的第二道安全网）──────────────────────────
+# driver-install/remove/restore 的路径白名单按**路径前缀**判断，有个结构性盲区：
+# multiarch 目录（/usr/lib/<triplet>）既是驱动共享库的家、也是系统库的家。厂商
+# deb 的依赖被 apt 解析时会把无关系统库拖进来（典型是 Epson 国行驱动那个 Qt5 GUI
+# 工具的依赖），它们正好落在白名单**内** → 被当成驱动产物写进 manifest → 卸载驱动
+# 时把系统库删了、restore 时用旧副本覆盖回去。
+# 按路径分不开，按**包属主**分得干干净净：这里记下镜像里当时已安装的全部包名，
+# 三个驱动脚本据此把"镜像自带包拥有的文件"一律排除在驱动快照之外。
+# ⚠️ 必须放在**所有 apt 安装之后**（否则漏记的包会被误判成"驱动装的"）。
+# ⚠️ 必须留在镜像层，**不能**放进 /opt/cups-drivers/data —— 那个目录会被 volume
+#    挂载覆盖，届时文件就没了，守卫会降级成"只做路径白名单"。
+RUN dpkg-query -W -f '${Package}\n' 2>/dev/null | sort -u > /opt/cups-drivers/baseline-packages.txt && \
+    echo "[dockerfile] baseline packages: $(wc -l < /opt/cups-drivers/baseline-packages.txt)"
 
 # ────────────────────────────────────────────────────────────────
 # Copy application binaries from build stages

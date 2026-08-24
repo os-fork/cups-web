@@ -1,3 +1,14 @@
+//go:build ignore
+
+// 手工调试探针：直接对 CUPS 发一个 IPP Print-Job，把 page.pdf 提交成一个打印作业。
+// 用来验证"绕过 cups-web 后端，纯 IPP 链路是否通"——排查是后端问题还是 CUPS/驱动问题。
+//
+// 跑法（TestPage 是相对路径，所以必须在本目录下执行；按需改下面的 PrinterURL）：
+//
+//	cd test && go run t2.go
+//
+// ⚠️ `//go:build ignore` 的理由同 t1.go：同目录下多个 package main 会让
+// `go build ./...` 报 "main redeclared in this block"。
 package main
 
 import (
@@ -18,7 +29,7 @@ const (
 
 // checkErr checks for an error. If err != nil, it prints error
 // message and exits
-func checkErr(err error, format string, args ...interface{}) {
+func checkErr(err error, format string, args ...any) {
 	if err != nil {
 		msg := fmt.Sprintf(format, args...)
 		fmt.Fprintf(os.Stderr, "%s: %s\n", msg, err)
