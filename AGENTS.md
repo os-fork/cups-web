@@ -230,6 +230,43 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 4. **登出**：两条 cookie `MaxAge=-1`
 5. **默认管理员**：`bootstrap.go` 保证 `admin/admin` 存在且 `protected=1`；`Username == "admin"` 判定保护（禁止改名/改角色/删除）
 
+### Cookie 属性
+
+两条 cookie 统一 `Path=/`、`SameSite=Lax`、`MaxAge=86400`，`Domain` 不设（host-only）。
+签发与清除都必须走 `auth.NewCSRFCookie()` / `auth.SetSession()` / `auth.ClearSession()`，
+🚫 不要在 handler 里手搓 `http.Cookie` —— 属性漂移过一次（旧的登出路径漏了 `Secure`/`SameSite`）。
+
+`Secure` 由 `COOKIE_SECURE` 三态控制：缺省 `auto`（逐请求看 `r.TLS` 或 `X-Forwarded-Proto`
+第一跳）/ `true` 恒开 / `false` 恒关。因此 `CookieSecure(r)` 带 `*http.Request` 参数，
+不能缓存成进程级常量。
+
+### 跨源防护（`middleware.CrossOriginProtection`）
+
+包 Go 标准库 `http.CrossOriginProtection`（基于 `Sec-Fetch-Site`，缺失时退化为
+`Origin` vs `r.Host`），外加两处项目特有的适配：
+
+- **`X-Forwarded-Host` 比对**：反代不写 `proxy_set_header Host $host` 时 `r.Host` 是上游
+  地址，Origin 与它天然不等 → 整站 POST 被 403。`proxyOriginAllowed()` 只在
+  `Sec-Fetch-Site` **缺失**时补一次 XFH 比对救回这类请求。
+  🚫 不要把这条放行扩大到 `Sec-Fetch-Site` 有值的情况 —— 那才是真正的跨源判定。
+  默认信任 XFH 不削弱安全（能伪造头的客户端本来就能让标准库 fail-open），论证见 docs。
+- **拒绝响应必须是 JSON**：标准库默认吐 `text/plain`，而前端把「响应不是合法 JSON」的
+  登录失败兜底显示成「用户名或密码错误」，导致反代配错被谎报成密码错误（issue #99）。
+  `denyCrossOrigin` 返回 `{"error","code":"cross_origin_blocked","origin","host"}` 并打
+  含全部判定依据的日志。同理，前端 `LoginView.vue` 的失败文案按状态码分级，
+  🚫 不要再加「解析失败就当密码错误」的兜底。
+
+`TRUSTED_ORIGINS`（逗号分隔完整 origin）是浏览器判定 `same-site`/`cross-site` 时的唯一
+逃生阀 —— 那种情况改请求头没用。
+
+### 登录限流（`login_limiter.go`）
+
+键 `clientIP|username`，5 次失败锁 15 分钟，仅进程内存。`clientIP()` 取
+`X-Forwarded-For` 第一跳且**无条件信任**，所以后端端口不应直接暴露公网。
+
+> 反代下的完整排查表、两类 403 的分别修法、Caddy/Traefik 配置、子路径挂载限制见
+> [docs/reverse-proxy.md](docs/reverse-proxy.md)。
+
 ## 🖨️ 打印流水
 
 `printHandler` 流程：接收 multipart → 落盘 `uploads/YYYYMMDD/` → 类型识别 & 转换 → 页数统计 → 插入 `queued` 记录 → IPP 提交 → 回写 `printed`。

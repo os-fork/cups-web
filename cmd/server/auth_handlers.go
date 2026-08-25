@@ -89,27 +89,17 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	clearLoginFailures(key)
 
 	sess := auth.Session{UserID: user.ID, Username: user.Username, Role: user.Role}
-	if err := auth.SetSession(w, sess); err != nil {
+	if err := auth.SetSession(w, r, sess); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "session error")
 		return
 	}
 	// set csrf token cookie (readable by JS)
-	token := randomToken()
-	csrfCookie := &http.Cookie{
-		Name:     "csrf_token",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   auth.CookieSecure(),
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400,
-	}
-	http.SetCookie(w, csrfCookie)
+	http.SetCookie(w, auth.NewCSRFCookie(r, randomToken()))
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	auth.ClearSession(w)
+	auth.ClearSession(w, r)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -126,15 +116,6 @@ func SessionHandler(w http.ResponseWriter, r *http.Request) {
 func CSRFHandler(w http.ResponseWriter, r *http.Request) {
 	// Not used: CSRF token is set on login; provide endpoint if needed
 	token := randomToken()
-	csrfCookie := &http.Cookie{
-		Name:     "csrf_token",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   auth.CookieSecure(),
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400,
-	}
-	http.SetCookie(w, csrfCookie)
+	http.SetCookie(w, auth.NewCSRFCookie(r, token))
 	writeJSON(w, map[string]string{"csrfToken": token})
 }

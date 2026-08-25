@@ -336,12 +336,21 @@ export LISTEN_ADDR=:8080
 | `CUPSADMIN` | CUPS 管理员用户名 | `print` |
 | `CUPSPASSWORD` | CUPS 管理员密码 | `print` |
 | `TZ` | 时区 | `Asia/Shanghai` |
+| `COOKIE_SECURE` | 会话 / CSRF cookie 的 `Secure` 属性：`auto`（缺省，按每个请求的实际协议判定）/ `true` 恒开 / `false` 恒关 | `auto` |
+| `TRUSTED_ORIGINS` | 额外放行的来源，逗号分隔（形如 `https://print.example.com`）。仅在跨源防护误拦时需要 | 空 |
+| `PRINTER_HOST_ALLOWLIST` | 打印机 URI 的主机白名单，逗号分隔。收紧 SSRF 面 | 空（不限制） |
+| `PRINTER_BLOCK_PRIVATE` | `true` 时拒绝指向私网地址的打印机 URI | `false` |
+| `OFD_CONVERTER_JAR` | OFD → PDF 转换器 jar 路径 | `/ofd-converter.jar` |
 
 > 💡 `.env.example` 只列了 Docker 部署常用的三个：`CUPSADMIN` / `CUPSPASSWORD` / `TZ`。这三个在镜像里都已有内置默认值（`print` / `print` / `Asia/Shanghai`），不写 `.env` 也能启动。
 >
 > 💡 `DB_PATH` / `UPLOAD_DIR` 的默认值是**相对路径**，镜像内工作目录是 `/`，所以容器里实际落在 `/data/cups-web.db` 与 `/uploads/`，正好对应下面的卷映射，通常不需要显式设置。
 >
 > 💡 `CUPS_HOST` 单容器化后默认就是 `localhost`（cupsd 与 Web 同容器），一般无需设置；只有把 Web 指向**另一台机器**上的 CUPS 时才需要，可写 `host` 或 `host:port`（省略端口时自动补 `631`）。
+>
+> 💡 `COOKIE_SECURE` 缺省的 `auto` 会在直连 HTTPS（`r.TLS`）或反代上报 `X-Forwarded-Proto: https` 时自动给 cookie 加 `Secure`，HTTP 内网部署行为不变。若代理错误地上报了 `https` 而浏览器实际走 HTTP，会出现「登录后立刻掉线」，此时显式设 `COOKIE_SECURE=false`。
+>
+> 💡 `TRUSTED_ORIGINS` 通常**不需要**设置。反向代理下的跨源误拦已由 `X-Forwarded-Host` 自动处理，详见 [docs/reverse-proxy.md](docs/reverse-proxy.md)。
 
 ### 命令行参数
 
@@ -413,9 +422,9 @@ Docker 默认卷映射：
 
 ## 🔧 进阶配置
 
-### 使用 HTTPS
+### 反向代理与 HTTPS
 
-通过反向代理（例如 Nginx）提供 HTTPS：
+通过反向代理（例如 Nginx）对外提供服务：
 
 ```nginx
 server {
@@ -425,15 +434,29 @@ server {
     ssl_certificate     /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
 
+    # 打印文件可能很大，不放开会 413 Request Entity Too Large
+    client_max_body_size 200m;
+
     location / {
         proxy_pass http://localhost:1180;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # 文档转换与驱动安装耗时较长，默认 60s 会中途断开
+        proxy_read_timeout    300s;
+        proxy_send_timeout    300s;
+        proxy_request_buffering off;
     }
 }
 ```
+
+> ⚠️ **上面五个 `proxy_set_header` 都不能省。** 漏掉 `Host` / `X-Forwarded-Host` 会让跨源防护把登录请求当成跨站请求拒掉，页面上表现为**登录提示密码错误**（issue #99）；漏掉 `X-Forwarded-Proto` 会让 HTTPS 部署下的 cookie 拿不到 `Secure` 标记。
+>
+> 📖 反代下的登录失败排查、Caddy / Traefik 配置、子路径挂载的限制，见 [docs/reverse-proxy.md](docs/reverse-proxy.md)。
 
 ### 修改端口
 
