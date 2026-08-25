@@ -122,6 +122,15 @@ cups-web/
 | GET | `/api/print-records/{id}/file` | 下载原始文件 |
 | POST | `/api/print-records/{id}/reprint` | 重打参数预填 |
 
+#### `/api/printers` 返回形状
+
+每项：`name` / `uri` / `info` / `location` / `makeAndModel`。`info` 即 CUPS Web 界面里的「描述」（`printer-info`），前端下拉靠它区分同型号队列（issue #101）。
+
+- `ipp.ListPrinters` 优先走 IPP `CUPS-Get-Printers`（只点名 4 个 `requested-attributes`，否则每台机器回上百个属性）；操作被拒或对端不是 CUPS 时退回抓 `/printers` HTML 页面，此时 `info`/`location`/`makeAndModel` 为空串。
+- 🚫 必须遍历 `rsp.Groups` 里的 `TagPrinterGroup`：`goipp` 的 `Message.Printer` 只是被压平的第一组，直接用它会在多队列时静默只返回一台。
+- 🚫 URI 一律按 `CUPS_HOST` + 队列名拼，**不要**用响应里的 `printer-uri-supported` —— 那是 cupsd 自报的主机名，容器/跨网段场景下浏览器与服务端未必解析得到。
+- CUPS 建队列不带 `-D` 时 `printer-info` 默认等于队列名，前端 `printerLabel()` 会在两者相同时省略描述，不重复显示。
+
 ### 管理员接口（`/api/admin/*`）
 
 | 方法 | 路径 | 说明 |

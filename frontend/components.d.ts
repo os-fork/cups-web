@@ -30,7 +30,6 @@ declare module 'vue' {
     UModal: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
     UPaperPreview: typeof import('./src/components/print/PaperPreview.vue')['default']
     UPdfCanvas: typeof import('./src/components/print/PdfCanvas.vue')['default']
-    UPrinterSelector: typeof import('./src/components/print/PrinterSelector.vue')['default']
     UPrinterStatus: typeof import('./src/components/print/PrinterStatus.vue')['default']
     UPrintOptions: typeof import('./src/components/print/PrintOptions.vue')['default']
     UPrintPreview: typeof import('./src/components/print/PrintPreview.vue')['default']

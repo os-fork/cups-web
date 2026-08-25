@@ -18,6 +18,27 @@ export function formatPrinterName(uri) {
   return parts[parts.length - 1] || uri
 }
 
+// printerLabel 拼打印机下拉的主标签：队列名 + CUPS 描述（issue #101）。
+// CUPS 建队列时若没指定 -D，printer-info 会默认等于队列名，这时不重复显示。
+export function printerLabel(printer) {
+  if (!printer) return ''
+  const name = printer.name || formatPrinterName(printer.uri)
+  const info = (printer.info || '').trim()
+  if (info && info.toLowerCase() !== name.toLowerCase()) return `${name} — ${info}`
+  return name
+}
+
+// printerDescription 拼下拉项的副标题：型号 · 位置 · URI。
+// 描述也重名时靠这一行区分（同型号多台、或多台机器共用一个描述）。
+export function printerDescription(printer) {
+  if (!printer) return ''
+  return [
+    (printer.makeAndModel || '').trim(),
+    (printer.location || '').trim(),
+    printer.uri
+  ].filter(Boolean).join(' · ')
+}
+
 export function formatDurationSeconds(totalSeconds) {
   if (!totalSeconds || totalSeconds < 0) return '未知'
   const d = Math.floor(totalSeconds / 86400)

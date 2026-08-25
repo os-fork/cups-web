@@ -39,7 +39,7 @@
           <div class="flex items-start gap-2">
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium truncate">{{ rec.filename }}</p>
-              <p class="text-xs text-muted mt-0.5">{{ formatPrinterName(rec.printerUri) }} · {{ rec.pages }}页</p>
+              <p class="text-xs text-muted mt-0.5">{{ recordPrinterName(rec.printerUri) }} · {{ rec.pages }}页</p>
               <p class="text-xs text-muted">{{ formatTime(rec.createdAt) }}</p>
             </div>
             <UBadge :color="statusColor(rec.status)" variant="subtle" size="xs">
@@ -118,7 +118,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { formatTime, formatPrinterName, statusColor, statusText } from '../../utils/format'
+import { formatTime, formatPrinterName, printerLabel, printerDescription, statusColor, statusText } from '../../utils/format'
 import PrintOptions from './PrintOptions.vue'
 
 const props = defineProps({
@@ -164,8 +164,22 @@ function defaultReprintForm() {
 const reprintForm = ref(defaultReprintForm())
 
 const printerSelectItems = computed(() =>
-  props.printers.map(p => ({ label: `${p.name} — ${p.uri}`, value: p.uri }))
+  props.printers.map(p => ({
+    label: printerLabel(p),
+    description: printerDescription(p),
+    value: p.uri
+  }))
 )
+
+// recordPrinterName 用打印机列表把记录里的 URI 反查成「队列名 — 描述」。
+// 记录落库的只有 URI，队列已删或列表还没加载时退回从 URI 取队列名。
+const printersByUri = computed(() =>
+  new Map(props.printers.map(p => [p.uri, p]))
+)
+function recordPrinterName(uri) {
+  const p = printersByUri.value.get(uri)
+  return p ? printerLabel(p) : formatPrinterName(uri)
+}
 
 function toggleRecord(id) {
   const s = new Set(expandedRecords.value)

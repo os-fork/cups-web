@@ -513,27 +513,142 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 }
 
 // Printer represents a CUPS printer.
+//
+// Info / Location / MakeAndModel 分别来自 CUPS 的 printer-info（Web 界面上的
+// “描述”）、printer-location、printer-make-and-model，用于在打印机多的时候把
+// 同型号队列区分开（issue #101）。HTML 兜底路径拿不到这些属性，会留空。
 type Printer struct {
-	Name string `json:"name"`
-	URI  string `json:"uri"`
+	Name         string `json:"name"`
+	URI          string `json:"uri"`
+	Info         string `json:"info"`
+	Location     string `json:"location"`
+	MakeAndModel string `json:"makeAndModel"`
 }
 
-// ListPrinters fetches the CUPS /printers HTML page on the given host and extracts printers.
-func ListPrinters(host string) ([]Printer, error) {
+// cupsHostPort 把 CUPS_HOST（可能带 scheme、可能不带端口）归一化成 host:port。
+func cupsHostPort(host string) (string, error) {
 	u := host
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		u = "http://" + u
 	}
 	parsed, err := url.Parse(u)
 	if err != nil {
-		return nil, fmt.Errorf("invalid host: %w", err)
+		return "", fmt.Errorf("invalid host: %w", err)
 	}
-
 	hostOnly := parsed.Host
+	if hostOnly == "" {
+		return "", fmt.Errorf("invalid host: %q", host)
+	}
 	if !strings.Contains(hostOnly, ":") {
 		hostOnly = hostOnly + ":631"
 	}
+	return hostOnly, nil
+}
 
+// ListPrinters 列出 CUPS 上的打印机队列。
+//
+// 优先走 IPP 的 CUPS-Get-Printers：一次请求就能拿到描述/位置/型号，比抓 HTML
+// 页面稳。失败时退回抓 /printers 页面 —— 远端 CUPS 禁掉了该操作、或者对端压根
+// 不是 CUPS 时，至少还能列出队列（只是没有描述）。
+func ListPrinters(host string) ([]Printer, error) {
+	hostOnly, err := cupsHostPort(host)
+	if err != nil {
+		return nil, err
+	}
+	printers, ippErr := listPrintersIPP(hostOnly)
+	if ippErr == nil {
+		return printers, nil
+	}
+	log.Printf("[ipp] CUPS-Get-Printers failed (%v), falling back to /printers page", ippErr)
+	return listPrintersHTML(hostOnly)
+}
+
+// listPrintersIPP 用 CUPS-Get-Printers 拉队列列表及其描述属性。
+func listPrintersIPP(hostOnly string) ([]Printer, error) {
+	reqURL := (&url.URL{Scheme: "http", Host: hostOnly, Path: "/"}).String()
+	if err := validatePrinterURI(reqURL); err != nil {
+		return nil, err
+	}
+
+	req := goipp.NewRequest(goipp.DefaultVersion, goipp.OpCupsGetPrinters, 1)
+	req.Operation.Add(goipp.MakeAttribute("attributes-charset", goipp.TagCharset, goipp.String("utf-8")))
+	req.Operation.Add(goipp.MakeAttribute("attributes-natural-language", goipp.TagLanguage, goipp.String("en-US")))
+	// 只点名列表要用的属性：不写 requested-attributes 时 CUPS 会给每台打印机
+	// 回上百个属性，队列多了纯属浪费带宽和解析时间。
+	var wanted goipp.Values
+	for _, name := range []string{"printer-name", "printer-info", "printer-location", "printer-make-and-model"} {
+		wanted.Add(goipp.TagKeyword, goipp.String(name))
+	}
+	req.Operation.Add(goipp.Attribute{Name: "requested-attributes", Values: wanted})
+
+	payload, err := req.EncodeBytes()
+	if err != nil {
+		return nil, fmt.Errorf("encode ipp request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create http request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", goipp.ContentType)
+	httpReq.Header.Set("Accept", goipp.ContentType)
+
+	resp, err := newSafeClient(dialTimeout).Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("http post: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("http status: %s", resp.Status)
+	}
+
+	var rsp goipp.Message
+	if err := rsp.Decode(limitedBody(resp.Body)); err != nil {
+		return nil, fmt.Errorf("decode ipp response: %w", err)
+	}
+	if status := goipp.Status(rsp.Code); status != goipp.StatusOk {
+		return nil, fmt.Errorf("ipp error: %s", status.String())
+	}
+
+	// CUPS-Get-Printers 每台打印机回一个 printer-attributes group，所以必须遍历
+	// rsp.Groups —— rsp.Printer 只是被压平的那一组，多队列时会丢数据。
+	printers := make([]Printer, 0, len(rsp.Groups))
+	for _, grp := range rsp.Groups {
+		if grp.Tag != goipp.TagPrinterGroup {
+			continue
+		}
+		var p Printer
+		for _, a := range grp.Attrs {
+			if len(a.Values) == 0 {
+				continue
+			}
+			v := strings.TrimSpace(a.Values[0].V.String())
+			switch a.Name {
+			case "printer-name":
+				p.Name = v
+			case "printer-info":
+				p.Info = v
+			case "printer-location":
+				p.Location = v
+			case "printer-make-and-model":
+				p.MakeAndModel = v
+			}
+		}
+		if p.Name == "" {
+			continue
+		}
+		// URI 仍按 host + 队列名拼，不用 printer-uri-supported：那里面是 cupsd
+		// 自报的主机名，容器/跨网段场景下客户端未必解析得到。
+		p.URI = fmt.Sprintf("http://%s/printers/%s", hostOnly, p.Name)
+		printers = append(printers, p)
+	}
+
+	log.Printf("[ipp] CUPS-Get-Printers: %d printer(s) from %s", len(printers), hostOnly)
+	return printers, nil
+}
+
+// listPrintersHTML 抓 CUPS /printers 页面并从超链接里提取队列名（兜底路径）。
+func listPrintersHTML(hostOnly string) ([]Printer, error) {
 	listURL := (&url.URL{Scheme: "http", Host: hostOnly, Path: "/printers"}).String()
 
 	if err := validatePrinterURI(listURL); err != nil {

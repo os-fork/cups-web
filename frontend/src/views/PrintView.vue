@@ -252,7 +252,7 @@ import PrintPreview from '../components/print/PrintPreview.vue'
 import PrintOptions from '../components/print/PrintOptions.vue'
 import PrintRecordList from '../components/print/PrintRecordList.vue'
 import PrinterStatus from '../components/print/PrinterStatus.vue'
-import { formatFileSize } from '../utils/format'
+import { formatFileSize, printerLabel, printerDescription } from '../utils/format'
 
 const emit = defineEmits(['logout'])
 const toast = useToast()
@@ -386,9 +386,15 @@ const printButtonLabel = computed(() => {
   return '开始打印'
 })
 
-// 打印机下拉选项（原 PrinterSelector.vue 迁移过来）
+// 打印机下拉选项：
+// label 只放队列名 + CUPS 描述，URI/型号挪到 description 那行（issue #101）：
+// 选中态的触发按钮只渲染 label，URI 挤在里面会把描述顶出可视区。
 const printerItems = computed(() =>
-  printers.value.map(p => ({ label: `${p.name} — ${p.uri}`, value: p.uri }))
+  printers.value.map(p => ({
+    label: printerLabel(p),
+    description: printerDescription(p),
+    value: p.uri
+  }))
 )
 function onPrinterSelect(val) {
   printer.value = val
