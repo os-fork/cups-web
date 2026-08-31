@@ -127,7 +127,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		outPath, cleanup, err := convertOfficeToPDF(countCtx, storedAbs)
 		if err != nil {
 			_ = os.Remove(storedAbs)
-			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			writeJSONError(w, http.StatusBadRequest, convertErrMsg(err))
 			return
 		}
 		pages, err = countPDFPages(outPath)
@@ -151,7 +151,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		outPath, cleanup, err := convertOFDToPDF(countCtx, storedAbs)
 		if err != nil {
 			_ = os.Remove(storedAbs)
-			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+			writeJSONError(w, http.StatusBadRequest, convertErrMsg(err))
 			return
 		}
 		pages, err = countPDFPages(outPath)

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -28,7 +30,7 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 		if headers, ok := r.MultipartForm.File["files"]; ok && len(headers) > 0 {
 			outPath, outCleanup, err = convertImagesMultiToPDF(headers, orientation, paperSize)
 			if err != nil {
-				http.Error(w, "conversion failed: "+err.Error(), http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, "文件转换失败："+err.Error())
 				return
 			}
 			defer outCleanup()
@@ -95,7 +97,7 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 		outPath, outCleanup, err = convertOfficeToPDF(ctx, inPath)
 	}
 	if err != nil {
-		http.Error(w, "conversion failed: "+err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, convertErrMsg(err))
 		return
 	}
 	defer outCleanup()
@@ -106,6 +108,16 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 	outFilename = name + ".pdf"
 
 	streamPDF(w, outPath, outFilename)
+}
+
+func convertErrMsg(err error) string {
+	if errors.Is(err, errBinaryNotInstalled) {
+		return "服务器未安装 LibreOffice，无法转换 Office 文档。请联系管理员安装 LibreOffice。"
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "服务器缺少文件转换所需的工具，请联系管理员安装相关依赖。"
+	}
+	return "文件转换失败：" + err.Error()
 }
 
 // streamPDF 以 application/pdf 的 Content-Type 把 PDF 文件流式写回响应

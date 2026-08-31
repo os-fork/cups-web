@@ -748,7 +748,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name) {
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
-  if (!resp.ok) throw new Error('服务端转换失败：' + await readError(resp))
+  if (!resp.ok) throw new Error(await readError(resp))
   return resp.blob()
 }
 
@@ -759,7 +759,7 @@ async function convertTextViaServer(file, orient, pSize) {
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
-  if (!resp.ok) throw new Error('服务端转换失败：' + await readError(resp))
+  if (!resp.ok) throw new Error(await readError(resp))
   return resp.blob()
 }
 
@@ -768,7 +768,7 @@ async function convertOfficeToPdf(file) {
   const fd = new FormData()
   fd.append('file', file, file.name)
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
-  if (!resp.ok) throw new Error('服务端转换失败：' + await readError(resp))
+  if (!resp.ok) throw new Error(await readError(resp))
   return resp.blob()
 }
 
