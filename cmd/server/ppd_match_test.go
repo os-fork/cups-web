@@ -26,6 +26,7 @@ var ppdTestFixture = []string{
 	"drv:///brlaser.drv/br1510.ppd Brother DCP-1510 series, using Owl-Maintain/brlaser v6.2.7",
 	"foomatic-db-compressed-ppds:0/ppd/foomatic-ppd/Canon-LaserJet_1020_clone.ppd Canon LaserJet 1020 clone Foomatic/pxlmono",
 	"zh/HP-LaserJet_1020-foo2zjs.ppd HP LaserJet 1020 Foomatic/foo2zjs,zh",
+	"foomatic-db-compressed-ppds:0/ppd/foomatic-ppd/HP-LaserJet_Pro_P1102-foo2zjs-z2.ppd HP LaserJet Pro P1102 Foomatic/foo2zjs-z2 (recommended)",
 }
 
 func parseFixture() []PPDEntry {
@@ -169,6 +170,38 @@ func TestScorePPD_EpsonL3250(t *testing.T) {
 	// Top-1 confidence >= medium
 	if cands[0].Confidence == ppdConfidenceLow {
 		t.Errorf("Top-1 confidence = low, want >= medium")
+	}
+}
+
+// ── 场景 4b：HP LaserJet Professional P1108（系列匹配 + professional→pro）────
+
+func TestScorePPD_HPLaserJetP1108(t *testing.T) {
+	entries := parseFixture()
+	cands := ScorePPDCandidates(entries, MatchInput{
+		Manufacturer: "HP",
+		Model:        "LaserJet Professional P1108",
+		PreferLang:   "zh",
+	}, 8)
+
+	if len(cands) == 0 {
+		t.Fatal("expected candidates, got none")
+	}
+	// 应找到 P1102 Foomatic/foo2zjs-z2 PPD
+	var p1102Found bool
+	for _, c := range cands {
+		if strings.Contains(c.PPD, "P1102") {
+			p1102Found = true
+			if c.Confidence == ppdConfidenceLow {
+				t.Errorf("P1102 candidate confidence should be >= medium, got low (score=%d)", c.Score)
+			}
+			break
+		}
+	}
+	if !p1102Found {
+		t.Error("P1102 Foomatic/foo2zjs-z2 PPD not found in candidates")
+		for i, c := range cands {
+			t.Logf("  [%d] %s (source=%s score=%d)", i, c.PPD, c.Source, c.Score)
+		}
 	}
 }
 
@@ -583,6 +616,55 @@ func TestDriverlessSchemeGate(t *testing.T) {
 		if !tt.wantAvail && info.Reason == "" {
 			t.Errorf("driverlessSchemeCheck(%q) should have non-empty Reason when unavailable", tt.uri)
 		}
+	}
+}
+
+// ── 场景 20：seriesTokenMatch 边界测试 ─────────────────────────────────────────
+
+func TestSeriesTokenMatch(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  []string
+		ppd  []string
+		want bool
+	}{
+		{"P1108 vs P1102", []string{"laserjet", "pro", "p1108"}, []string{"laserjet", "pro", "p1102"}, true},
+		{"L3250 vs L3251", []string{"l3250"}, []string{"l3251"}, true},
+		{"L3250 vs L3150 (different series)", []string{"l3250"}, []string{"l3150"}, false},
+		{"P1005 vs P1505 (different series)", []string{"laserjet", "p1005"}, []string{"laserjet", "p1505"}, false},
+		{"MF3010 vs MF3014", []string{"mf3010"}, []string{"mf3014"}, true},
+		{"empty dev", []string{}, []string{"p1102"}, false},
+		{"no digit tokens", []string{"laserjet", "pro"}, []string{"laserjet", "pro"}, false},
+		{"non-digit token mismatch", []string{"laserjet", "p1108"}, []string{"deskjet", "p1102"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := seriesTokenMatch(tt.dev, tt.ppd)
+			if got != tt.want {
+				t.Errorf("seriesTokenMatch(%v, %v) = %v, want %v", tt.dev, tt.ppd, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── 场景 21：NormalizeModelKey professional→pro 归一化 ────────────────────────
+
+func TestNormalizeModelKey_ProfessionalToPro(t *testing.T) {
+	_, compact, tokens := NormalizeModelKey("LaserJet Professional P1108")
+	if compact != "laserjetprop1108" {
+		t.Errorf("compact = %q, want %q", compact, "laserjetprop1108")
+	}
+	found := false
+	for _, tok := range tokens {
+		if tok == "professional" {
+			t.Error("'professional' should have been replaced by 'pro'")
+		}
+		if tok == "pro" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("'pro' not found in tokens: %v", tokens)
 	}
 }
 

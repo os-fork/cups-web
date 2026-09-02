@@ -117,6 +117,7 @@ const (
 	ppdTierExactWithMake    = 1000 // 厂商一致 + compact 完全相等
 	ppdTierBoundaryWithMake = 850  // 厂商一致 + compact 在字母/数字边界上互为前后缀
 	ppdTierTokensWithMake   = 700  // 厂商一致 + 型号所有 token 命中
+	ppdTierSeriesWithMake   = 600  // 厂商一致 + 非数字 token 全中 + 数字 token 系列近似
 	ppdTierExactNoMake      = 500  // 厂商未知 + compact 完全相等
 	ppdTierTokensNoMake     = 380  // 厂商未知 + 型号所有 token 命中
 	ppdTierPartial          = 200  // token 命中率 >= 2/3 且含数字 token 全中
@@ -324,6 +325,13 @@ func isPPDSeparator(b byte) bool {
 
 // ── 型号归一化 ─────────────────────────────────────────────────────────────────
 
+// ppdTokenSynonyms 把型号串里的等价词收敛成统一形式。
+// 打印机厂商在设备自报名和 PPD 描述里经常用不同的写法指代同一产品线
+// （"Professional" vs "Pro"），统一后才能让 token 匹配生效。
+var ppdTokenSynonyms = map[string]string{
+	"professional": "pro",
+}
+
 // ppdNoiseTokens 是对型号匹配毫无贡献、却会稀释 token 命中率的词。
 // 它们大多是驱动名或修饰词，被 PPD 描述塞在型号后面。
 var ppdNoiseTokens = map[string]bool{
@@ -373,6 +381,9 @@ func NormalizeModelKey(s string) (norm, compact string, tokens []string) {
 	}
 
 	for _, tok := range strings.Fields(b.String()) {
+		if syn, ok := ppdTokenSynonyms[tok]; ok {
+			tok = syn
+		}
 		if ppdNoiseTokens[tok] || ppdVersionToken.MatchString(tok) {
 			continue
 		}
@@ -652,6 +663,66 @@ func tokenHitStats(want, have []string) (hits, total, digitTotal, digitHits int)
 	return hits, total, digitTotal, digitHits
 }
 
+// seriesTokenMatch 判断设备 token 列表与 PPD token 列表是否构成「系列匹配」：
+// 所有不含数字的 token 精确命中，每个含数字的 token 与 PPD 侧某个含数字 token
+// 共享 ≥ 75% 的公共前缀（且公共前缀 ≥ 3 字符）。
+//
+// 例："p1108" vs "p1102" → 公共前缀 "p110"（4/5 = 80%）→ 命中。
+// 例："l3250" vs "l3150" → 公共前缀 "l3"（2/5 = 40%）→ 不命中。
+func seriesTokenMatch(devTokens, ppdTokens []string) bool {
+	if len(devTokens) == 0 {
+		return false
+	}
+	ppdSet := make(map[string]bool, len(ppdTokens))
+	var ppdDigitTokens []string
+	for _, t := range ppdTokens {
+		ppdSet[t] = true
+		if strings.ContainsAny(t, "0123456789") {
+			ppdDigitTokens = append(ppdDigitTokens, t)
+		}
+	}
+	hasDigit := false
+	for _, dt := range devTokens {
+		isDigit := strings.ContainsAny(dt, "0123456789")
+		if isDigit {
+			hasDigit = true
+			if !digitTokenSeriesMatch(dt, ppdDigitTokens) {
+				return false
+			}
+		} else {
+			if !ppdSet[dt] {
+				return false
+			}
+		}
+	}
+	return hasDigit
+}
+
+// digitTokenSeriesMatch 判断一个含数字的 token 是否与候选列表中某个 token 构成系列关系。
+func digitTokenSeriesMatch(dev string, ppdDigits []string) bool {
+	for _, pt := range ppdDigits {
+		pfx := commonPrefix(dev, pt)
+		if pfx >= 3 && pfx*100/len(dev) >= 75 && pfx*100/len(pt) >= 75 {
+			return true
+		}
+	}
+	return false
+}
+
+// commonPrefix 返回两个字符串的公共前缀长度。
+func commonPrefix(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
 // scoreTier 算出一条 PPD 相对目标设备的型号匹配强度档位。
 func scoreTier(e PPDEntry, devMake, devCompact string, devTokens []string) int {
 	if devCompact == "" || e.compact == "" {
@@ -668,6 +739,8 @@ func scoreTier(e PPDEntry, devMake, devCompact string, devTokens []string) int {
 			return ppdTierBoundaryWithMake
 		case tokensAllPresent(devTokens, e.tokens):
 			return ppdTierTokensWithMake
+		case seriesTokenMatch(devTokens, e.tokens):
+			return ppdTierSeriesWithMake
 		}
 	}
 
