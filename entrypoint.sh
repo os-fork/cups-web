@@ -208,6 +208,41 @@ for i in $(seq 1 30); do
 done
 
 # ══════════════════════════════════════════════════════════════
+# 8b. PdftopsRenderer: PDF→PostScript 渲染器改用 Ghostscript (issue #105)
+# ══════════════════════════════════════════════════════════════
+# cups-filters 的 pdftops 滤镜默认用 Poppler 渲染 PDF→PostScript，对某些 PDF
+# 会失败导致任务卡在 processing。这里分两步修复：
+#   ① 修补存量卷中缺失 PdftopsRenderer 的 cups-browsed.conf（影响新发现的队列）
+#   ② 对所有已存在的打印机队列设置 pdftops-renderer=gs（影响存量队列）
+# 幂等：已设过则跳过。失败不阻塞启动。
+
+# ① 存量卷修补：Dockerfile 已在镜像基线写入 PdftopsRenderer gs，但挂载的
+#   ./.etc 卷可能还是旧配置，这里补上。
+if [ -f /etc/cups/cups-browsed.conf ] && ! grep -q '^[[:space:]]*PdftopsRenderer' /etc/cups/cups-browsed.conf; then
+    echo "" >> /etc/cups/cups-browsed.conf
+    echo "# Use Ghostscript for PDF->PostScript conversion (issue #105)" >> /etc/cups/cups-browsed.conf
+    echo "PdftopsRenderer gs" >> /etc/cups/cups-browsed.conf
+    echo "[entrypoint] 已为存量 cups-browsed.conf 追加 PdftopsRenderer gs（issue #105）"
+fi
+
+# ② 对所有已存在的打印机队列设置 pdftops-renderer=gs
+#    lpoptions -p NAME -o pdftops-renderer=gs 写入 per-printer 默认选项，
+#    对手动通过 CUPS Web UI / lpadmin 添加的本地队列生效。
+(
+    set +x
+    for p in $(lpstat -e 2>/dev/null); do
+        current=$(lpoptions -p "$p" -l 2>/dev/null | grep 'pdftops-renderer' | head -1)
+        if ! echo "$current" | grep -q '\bgs\b'; then
+            if lpoptions -p "$p" -o pdftops-renderer=gs 2>/dev/null; then
+                echo "[entrypoint] set pdftops-renderer=gs on $p (issue #105)"
+            else
+                echo "[entrypoint] WARN: failed to set pdftops-renderer=gs on $p (issue #105)"
+            fi
+        fi
+    done
+) &
+
+# ══════════════════════════════════════════════════════════════
 # 9. AirPrint A4 media-ready patch (from cups/entrypoint.sh)
 # ══════════════════════════════════════════════════════════════
 # ── 把 HP 1020 队列的默认纸张设成 A4 ────────────────────────────────────

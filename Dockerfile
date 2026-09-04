@@ -304,6 +304,18 @@ RUN sed -i 's/Listen localhost:631/Listen 0.0.0.0:631/' /etc/cups/cupsd.conf && 
 # 空目录发布了 —— 那是别人的实现细节，不该依赖。显式建出来，并确保它进 cups-bak
 # 基线（entrypoint 还原空卷时会带上）。
 RUN mkdir -p /etc/cups/ssl && chmod 700 /etc/cups/ssl
+
+# ── cups-browsed: PDF→PostScript 渲染器改用 Ghostscript（issue #105）────
+# cups-filters 的 pdftops 滤镜默认用 Poppler 渲染 PDF→PostScript，对某些 PDF
+# （gofpdf 生成的、LibreOffice 导出的）会失败，导致打印任务卡在 processing。
+# 将渲染器切换为 Ghostscript 可解决此问题。此配置影响 cups-browsed 为 Avahi/DNS-SD
+# 自动发现的远程打印机创建的队列（AirPrint 打印走这条路径）。
+RUN if [ -f /etc/cups/cups-browsed.conf ] && ! grep -q '^PdftopsRenderer' /etc/cups/cups-browsed.conf; then \
+      echo "" >> /etc/cups/cups-browsed.conf && \
+      echo "# Use Ghostscript for PDF->PostScript conversion (issue #105)" >> /etc/cups/cups-browsed.conf && \
+      echo "PdftopsRenderer gs" >> /etc/cups/cups-browsed.conf; \
+    fi
+
 RUN cp -rp /etc/cups /etc/cups-bak
 
 # ────────────────────────────────────────────────────────────────
